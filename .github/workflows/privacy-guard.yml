@@ -1,0 +1,39 @@
+name: Privacy guard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # This repository publishes a format whose design document mentions `D:\`,
+      # `sk-` and `Bearer` as *search keywords* rather than as data (acceptance
+      # criterion S7). A naive pattern would therefore fail the job on the very
+      # documentation that defines the rule. Every alternative below requires a
+      # full, real entity - a two-segment path, a personal-domain address, or a
+      # credential-shaped token - so prose about credentials cannot trip it.
+      #
+      # The Windows-path alternative excludes the backtick from its segment
+      # class on purpose: with a plain `[^\\ ]+` it happily spans the quoted
+      # prose in `X:\...` and `\\?\...` on one line of the design document and
+      # reports a leak that is not there.
+      #
+      # The check is deliberately blunt and local: it catches what a human
+      # forgets to look for. Placeholders such as <repo-root> are the intended
+      # way to write about a machine-specific location in this repository.
+      - name: Reject personal data and credentials
+        run: |
+          PATTERN='[A-Za-z]:\\[^\\`]+\\|/Users/[A-Za-z0-9._-]+/|/home/[A-Za-z0-9._-]+/|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(edu|edu\.[a-z]{2}|ac\.[a-z]{2}|gmail\.com|outlook\.com|hotmail\.com|qq\.com|163\.com|126\.com)|sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|Bearer [A-Za-z0-9._~+/-]{20,}'
+          if grep -rInE "$PATTERN" --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=lib . ; then
+            echo "::error::Personal data or credential-shaped text found above. Replace machine-specific locations with <repo-root> and remove the rest."
+            exit 1
+          fi
+          echo "No personal data or credential patterns found."

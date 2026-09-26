@@ -53,6 +53,7 @@
 | `docs/设计说明书.md` —— 设计文档（19 节）                                | ✅ 已写完待审查 |
 | `README.md`、`README.zh-CN.md`                                           | ✅ 就位         |
 | `LICENSE`                                                                | ✅ 就位         |
+| `.github/` —— CI、隐私守卫与 PR 模板                                      | ✅ 就位         |
 | `package.json`、`tsconfig.json`、`tsdown.config.ts`、`vitest.config.ts`  | ⛔ 未开始       |
 | `cordis.patch.yml` —— bundle patch                                       | ⛔ 未开始       |
 | `src/index.ts` —— 插件入口（`name`、`inject`、`Config`、`apply`）        | ⛔ 未开始       |
@@ -453,7 +454,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 有两个缺口，与其藏在勾选框后面，不如明说：
 
-- **发布没有任何 task。** 状态表里写着「发布到 npm」，§17 第 1 问也承认 npm 名是否被占用尚未核实，但 T01–T18 里没有一条覆盖名字核查或发布；也没有任何 task 负责 CI。
+- **发布没有任何 task。** 状态表里写着「发布到 npm」，§17 第 1 问也承认 npm 名是否被占用尚未核实，但 T01–T18 里没有一条覆盖名字核查或发布；CI 以仓库基础设施的形式单独落地了（见[目前完成到哪一步](#目前完成到哪一步)）。
 - **`err_export` 从 README 的任务清单里掉了。** 设计文档 §15 的 P7 在 Obsidian 导出之外还提到 `err_export` 单文件 JSON 备份，而 T18 只写了 Obsidian 导出。要么把工具找回来，要么把阶段描述改窄。
 
 ### 完整任务分解
@@ -490,6 +491,7 @@ pnpm test             # vitest
 pnpm typecheck        # tsc --noEmit
 pnpm lint             # oxlint
 pnpm format           # prettier --write .
+pnpm format:check     # prettier --check .（CI 跑的就是这条）
 ```
 
 ### 测试计划

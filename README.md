@@ -55,6 +55,7 @@
 | `docs/设计说明书.md` — the design document (19 sections)                  | ✅ Written, pending review |
 | `README.md`, `README.zh-CN.md`                                            | ✅ In place                |
 | `LICENSE`                                                                 | ✅ In place                |
+| `.github/` — CI, privacy guard and PR template                            | ✅ In place                |
 | `package.json`, `tsconfig.json`, `tsdown.config.ts`, `vitest.config.ts`   | ⛔ Not started             |
 | `cordis.patch.yml` — bundle patch                                         | ⛔ Not started             |
 | `src/index.ts` — plugin entry (`name`, `inject`, `Config`, `apply`)       | ⛔ Not started             |
@@ -456,7 +457,7 @@ The design document plans in phases P0–P7 (§15); the task list numbers the sa
 
 Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 
-- **Publishing has no task.** The status table lists "Published to npm" and §17 Q1 admits the npm name has not been checked for availability, but none of T01–T18 covers checking the name or publishing a release. Nor does any task set up CI.
+- **Publishing has no task.** The status table lists "Published to npm" and §17 Q1 admits the npm name has not been checked for availability, but none of T01–T18 covers checking the name or publishing a release. CI is not in the task list either — it landed as repository infrastructure instead, see [What works today](#what-works-today).
 - **`err_export` is missing from the README's task list.** §15 P7 mentions an `err_export` single-file JSON backup alongside the Obsidian export; T18 only mentions the Obsidian export. Either the tool returns or the phase description is trimmed.
 
 ### Full task breakdown
@@ -493,6 +494,7 @@ pnpm test             # vitest
 pnpm typecheck        # tsc --noEmit
 pnpm lint             # oxlint
 pnpm format           # prettier --write .
+pnpm format:check     # prettier --check .  (what CI runs)
 ```
 
 ### Test plan
