@@ -1,0 +1,585 @@
+# dsh-errkb
+
+![Status](https://img.shields.io/badge/status-design%20stage-orange)
+![License](https://img.shields.io/github/license/jingchangzhao-gif/dsh-errkb)
+![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
+
+[简体中文](README.zh-CN.md)
+
+> Recycles errors: the same failure is diagnosed once, recorded, and handed back as a known fix the next time it appears.
+
+`dsh-errkb` is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) plugin that turns the errors a model hits into a numbered, human-editable knowledge base — then pushes the recorded fix back into context *before* the model starts diagnosing.
+
+> **Status: design stage.** There is no code yet. The design document is
+> written and under review — eight decisions in its §17 are still open — and
+> the work is broken into [eighteen tasks](#roadmap) across seven milestones.
+> **Nothing here is installable today.** Every command below describes the
+> intended path, not a working one.
+>
+> - Design document: [`docs/设计说明书.md`](docs/设计说明书.md) — 19 sections, Chinese
+> - What the plugin will do: [How it works](#how-it-works)
+> - Where your data will land: [Where the knowledge base lives](#where-the-knowledge-base-lives)
+> - What is blocking the start: [Open decisions](#open-decisions) — nothing begins until §17 is answered
+
+## Contents
+
+- [What works today](#what-works-today)
+- [Why](#why)
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Where the knowledge base lives](#where-the-knowledge-base-lives)
+- [The ERRORS.md format](#the-errorsmd-format)
+- [Injection: when it speaks and how much](#injection-when-it-speaks-and-how-much)
+- [Cost model](#cost-model)
+- [Requirements and compatibility](#requirements-and-compatibility)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Privacy and redaction](#privacy-and-redaction)
+- [Failure modes and safety](#failure-modes-and-safety)
+- [Known limitations](#known-limitations)
+- [Verifying it works](#verifying-it-works)
+- [Roadmap](#roadmap)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [Uninstall](#uninstall)
+- [Open decisions](#open-decisions)
+- [Future work](#future-work)
+- [Contributing](#contributing)
+- [License](#license)
+
+## What works today
+
+| Piece                                                                     | State                      |
+| ------------------------------------------------------------------------- | -------------------------- |
+| `docs/设计说明书.md` — the design document (19 sections)                  | ✅ Written, pending review |
+| `README.md`, `README.zh-CN.md`                                            | ✅ In place                |
+| `LICENSE`                                                                 | ✅ In place                |
+| `package.json`, `tsconfig.json`, `tsdown.config.ts`, `vitest.config.ts`   | ⛔ Not started             |
+| `cordis.patch.yml` — bundle patch                                         | ⛔ Not started             |
+| `src/index.ts` — plugin entry (`name`, `inject`, `Config`, `apply`)       | ⛔ Not started             |
+| `src/paths.ts` — KB directory resolution                                  | ⛔ Not started             |
+| `src/signature.ts` — normalization and fingerprinting                     | ⛔ Not started             |
+| `src/redact.ts` — mandatory redaction                                     | ⛔ Not started             |
+| `src/store.ts` — parse, render, append, archive                           | ⛔ Not started             |
+| `src/match.ts` — exact, fuzzy and fallback matching                       | ⛔ Not started             |
+| `src/state.ts` — `state.json`, `.machine.json`, environment fingerprint   | ⛔ Not started             |
+| `src/capture.ts` — hook payloads and the noise rule                       | ⛔ Not started             |
+| `src/inject.ts` — notice generation and hard caps                         | ⛔ Not started             |
+| `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
+| `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
+| `tests/`                                                                  | ⛔ Not started             |
+| Installed into the `web` profile                                          | ⛔ Not started             |
+| Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
+
+## Why
+
+An agent has no memory of the last time it hit an error, so it re-derives the diagnosis from scratch: reasoning, a failed attempt, another failed attempt. That costs somewhere between 800 and 3000 tokens.
+
+For a failure you see once, that is fine. For a failure you see every week — an `EPERM` from a locked `node_modules`, a `CONTEXT_OVERFLOW`, a misspelled provider name — it is pure waste. A human recognizes "this is the one from last time" instantly. The model does not, because the path changed, the line number changed, and the PID is different.
+
+`dsh-errkb` closes that gap by keeping the knowledge on disk and injecting what it already knows.
+
+## Features
+
+> **Designed, not implemented.** Everything below is specified in the design
+> document and covered by a test plan. None of it runs yet — see
+> [What works today](#what-works-today).
+
+| Behaviour                     | Detail                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------- |
+| **Stable IDs**                | Every distinct error gets one, `E-0001` onward, and keeps it forever            |
+| **Same error, one ID**        | Changed paths, line numbers, PIDs and timestamps still count as the same error  |
+| **Injected before diagnosis** | On a hit the recorded fix enters context — about 80 tokens                      |
+| **Human-editable**            | `ERRORS.md` is plain Markdown; a fix you type by hand is used immediately       |
+| **Mandatory redaction**       | Secrets, emails and absolute paths are scrubbed before anything is stored       |
+| **Cross-device by git**       | Append-only blocks merge cleanly; counters stay local and never conflict        |
+| **An auditable ledger**       | `err_stats` reports hits, injections and estimated tokens saved                 |
+| **Compaction-friendly**       | Facts live on disk and are injected on demand, not held in conversation history |
+| **Fully local**               | Matching, storage and lookup call no model and touch no network                 |
+| **Bounded by construction**   | Every injection is capped, and the caps are part of the specification           |
+
+## How it works
+
+```
+1. CAPTURE      agent/request-error · agent/error · tools/result · non-zero exits
+                observe only — never throws, never takes over retries
+                                     │
+                                     ▼
+2. FINGERPRINT  normalize: strip ANSI; ts / pid / port / line / uuid / tmp → placeholders;
+                absolute paths → <path>, filename kept
+                signature = sha256(category + "\0" + message)[0:12]
+                                     │
+                                     ▼
+3. MATCH        exact signature → Jaccard fuzzy (≥ 0.72) → short-message
+                same-code fallback → otherwise assign a new ID
+                                     │
+                       ┌─────────────┴─────────────┐
+                    hit│                           │miss
+                       ▼                           ▼
+4. INJECT     ≤ 120 tokens/notice             5. RECORD   append block to ERRORS.md
+   ≤ 1/step, 3/turn, 2/ID/session                         assign next ID (append-only)
+                       ▲                           ▲
+                       └─────────────┬─────────────┘
+                                     │
+6. RESOLVE      model or user writes the fix via `err_record` (the sole entry point)
+                resolution detection → one-shot prompt → status becomes `fixed`
+```
+
+The hard part is step 3, not step 2. Normalizing a message is mechanical; deciding that two different-looking messages *are* the same error is where a knowledge base either helps or quietly poisons the context with the wrong fix. Matching runs in three tiers — exact signature, then fuzzy token similarity, then a same-code fallback for messages too short to compare — and a near miss is labelled as one in the injected text rather than passed off as certain.
+
+**One rule holds the whole thing together:** `ERRORS.md` is the single source of truth. `errors.index.json` is a derived cache that can be deleted and rebuilt; `state.json` holds local counters that can be lost without consequence. None of the three ever writes another's facts.
+
+### What earns an ID
+
+Not every failure deserves a number. Transient ones are counted and only promoted when they keep happening, because a rate limit is not knowledge.
+
+| Source                               | Hook                                 | Captured as                                                    | Gets an ID?                                                                        |
+| ------------------------------------ | ------------------------------------ | -------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| LLM API failure                      | `agent/request-error` (waterfall)    | `code` + normalized message                                    | Permanent codes: `AUTH`, `QUOTA`, `INVALID_REQUEST`, `CONTEXT_OVERFLOW`, `NO_ADAPTER`, `UNKNOWN` → immediately |
+| Turn-level exception                 | `agent/error` (emit)                 | `error.message` / `code` / `name`                              | Immediately (safely stringified when `unknown`)                                     |
+| Tool failure                         | `tools/result` (emit)                | `exec.name` + `result.error.message` + `result.error.info.code` | Immediately (`result.isError`)                                                      |
+| Command exited non-zero              | `tools/result` content sniffing      | matches `\[exit code: (\d+)\]` with N ≠ 0                      | Immediately, unless `captureExitCodes` is off                                       |
+| Transient LLM failure                | `agent/request-error`                | `RATE_LIMIT`, `SERVER`, `TIMEOUT`, `TRANSPORT`, `EMPTY_RESPONSE` | ❌ counted only — promoted after `transientThreshold` (default 5) in one session    |
+
+The listener on `agent/request-error` must `await next()` and return the downstream result unchanged. It observes; it never recovers.
+
+## Where the knowledge base lives
+
+`kbDir` resolves in three tiers, in order:
+
+| # | Condition                                                                             | Resolution                                                 |
+| - | ------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 1 | `kbDir` is set                                                                        | Relative → against the **plugin package root**; absolute → as-is. Device-local differences belong here |
+| 2 | `kbDir` is empty, the plugin root is writable and **not inside `node_modules`**       | `<plugin root>/errors/`                                    |
+| 3 | Otherwise — global npm install, read-only package directory, unwritable disk          | `$DSH_HOME/errkb/`                                         |
+
+At startup the plugin logs the resolved path on one line, so the location is never a guess. `err_stats` prints it too.
+
+A development install is a `link:`, so during development the knowledge base is `errors/` inside this repository and travels with GitHub. Clone the repo onto any drive on any machine and the path follows; **no absolute path is ever written into the document**.
+
+Inside that directory:
+
+| File                 | Role                                                                              | Treat it as                                        |
+| -------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `ERRORS.md`          | **The single source of truth** — numbered entries, append-only                     | Hand-editable, commit it                           |
+| `ERRORS.archive.md`  | Entries archived past `maxEntries`, append-only                                    | Commit it                                          |
+| `errors.index.json`  | Derived cache: signature → ID                                                      | Deletable, rebuilt from `ERRORS.md`; gitignore it  |
+| `state.json`         | Machine-local state: hit counts, `lastSeen`, `nextId`, environment fingerprint     | Deletable; **machine-local, never commit it**      |
+| `.machine.json`      | Device slug (`deviceSlug`, e.g. `DESKTOP-A`) used for the entry's device field     | Deletable/regenerated; device-local, keep it out of git |
+| `.lock`              | Transient write lock, removed when the write finishes                              | Ignore it                                          |
+
+A sensible `.gitignore` for the knowledge base directory:
+
+```gitignore
+state.json
+errors.index.json
+.machine.json
+.lock
+```
+
+The design document names `state.json` and `errors.index.json` explicitly; `.machine.json` and `.lock` are device-local or transient for the same reason.
+
+That split is the whole cross-device story: knowledge merges by appending to `ERRORS.md`, counters stay on the machine that produced them, and the two never fight. See [Roadmap](#roadmap) for what is not built.
+
+## The ERRORS.md format
+
+IDs start at `E-0001`, built from `idPrefix` (default `E-`) and `idWidth` (default `4`), and are **append-only — an ID is never changed once written**, not even to resolve a merge conflict.
+
+One entry, with machine fields carried in an HTML comment so the rendered document stays clean and hand-editing stays safe:
+
+````md
+## E-0007 · [tool:pwsh] EPERM: operation not permitted, rename
+<!-- errkb: sig=3f2a1c9d0b71 cat=tool code=EPERM first=2026-09-14T09:12:33Z device=DESKTOP-A proj=报错的回收再利用 -->
+
+- 指纹: `3f2a1c9d0b71`
+- 分类: `tool / pwsh`
+- 首次: 2026-09-14 09:12 · 最近: 2026-09-14 15:40 · 命中: 5
+- 触发: `pnpm install` 在中文路径下写 `node_modules` 时被占用
+- 原始信息:
+  ```text
+  EPERM: operation not permitted, rename '<path>\node_modules\.pnpm\<hash>'
+  ```
+- 解法:
+  关闭占用该目录的编辑器/杀软实时扫描后重跑 `pnpm install`；仍失败则改用 `pnpm install --config.node-linker=hoisted`。
+- 状态: `fixed`
+- 备注:
+````
+
+**Parsing rules:** blocks split on `^## (E-\d+) ·`; the `<!-- errkb: ... -->` comment supplies the machine fields; `- 解法:` runs until the next `- ` field. **Your hand edits win over the index** — the index is only a cache, so a fix you type in any Markdown editor is used on the very next hit.
+
+**Entry status:** `open`, `fixed`, or `wontfix`. Setting `wontfix` (or flagging an entry as a misjudgment) takes it out of automatic injection permanently while it keeps counting, so one bad record cannot keep poisoning the context.
+
+> **Field language is an open decision.** The on-disk labels above are Chinese (`指纹`, `解法`, `状态`, …) because that is what the design document specifies today; §17 Q2 asks whether they should stay Chinese or become English, with English machine keys either way. The sample will be updated when that is settled — see [Open decisions](#open-decisions).
+
+## Injection: when it speaks and how much
+
+| Situation                                  | Injection point                                                       | What arrives                                                                 |
+| ------------------------------------------ | --------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| A tool or command failed in this step      | `tools/post-execute` → `additionalContexts`                           | Hit: the known fix. Miss: `recorded as E-0011 (no fix yet).`                 |
+| An LLM call failed and the turn is already dead | The next `agent/pre-step` → `{kind: 'enter', messages}`         | The notice for the entry that matches the failed step                        |
+| Session opens                              | `agent/session-start` → `agent.inject()`                              | Whatever `sessionDigest` says: `off`, `counts` (one line), or `index` (up to 10 entry titles) |
+| Always                                     | `ctx.systemPrompt.section({name: 'plugin:errkb', order: 10400})`      | ~50 tokens of standing behaviour: check the KB first, record new fixes        |
+
+On a hit the model does not receive a report — it receives an instruction, capped at 120 tokens:
+
+```
+[errkb] E-0007 known (5 hits) | cause: node_modules locked by an editor during
+pnpm install | fix: close the locking process and re-run; if it persists, use
+pnpm install --config.node-linker=hoisted. Apply this; do not re-diagnose.
+```
+
+**Hard caps, and the caps are the point.** One notice per step, three per turn, two per ID per session; each notice ≤ 120 tokens (body ≤ 400 characters, and the plugin-source `summary` truncated to ≤ 120 characters for the `{kind: 'plugin', form: 'notice'}` message shape). An entry whose status is `fixed` announces itself once and then goes quiet. An uncapped version of this plugin would be worse than no plugin: a hit rate bought with constant noise turns a saving into a cost.
+
+Every cap is configurable downwards, and `inject: 'off'` turns injection off entirely while capture keeps recording.
+
+## Cost model
+
+You should be able to decide for yourself whether this is worth it, so here is the arithmetic.
+
+| Item                                        | Cost / saving                                                        |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| One hit, injected                           | ~80 tokens, replacing a re-diagnosis that typically costs 800–3000     |
+| Standing system-prompt section              | ~50 tokens per request (switch off with `systemPromptHint: false`)     |
+| Session-opening digest                      | ~40 tokens per session (`sessionDigest: 'counts'`)                     |
+| Matching, fingerprinting, storage, `err_stats` | Zero — entirely local, no model call, no network                    |
+| **Break-even**                              | **Recovered at a hit rate of roughly 5% or better**                    |
+
+Below that hit rate the fixed session cost exceeds the savings, and the honest answer is to turn `systemPromptHint` off or not install it. `err_stats` reports hits, injections, estimated tokens saved and the resolved KB path locally, so the decision can be made from numbers rather than a feeling.
+
+## Requirements and compatibility
+
+| Requirement    | Value                                                                                        |
+| -------------- | -------------------------------------------------------------------------------------------- |
+| dsh            | `0.1.5-rc.2` (the version this design was verified against)                                   |
+| Cordis         | `4.0.2`                                                                                       |
+| `dsh-tools`    | `0.1.5-rc.2`                                                                                  |
+| `dsh-llm`      | `0.1.5-rc.2`                                                                                  |
+| schemastery    | `3.18.2`                                                                                      |
+| Build tooling  | `tsdown 0.22.2`, `vitest`, `typescript`, `oxlint`, `prettier`                                  |
+| Node / pnpm    | **Not pinned yet** — no `engines` range has been decided; see [Open decisions](#open-decisions) |
+| Platform       | Developed and verified on Windows. No other platform has been tested and no OS support statement exists yet |
+
+The extension points below were verified against the local installation, not against published documentation — file and line references are in §2 of the design document:
+
+`agent/request-error` · `agent/error` · `tools/result` · `tools/post-execute` · `agent/pre-step` · `agent/session-start` · `agent.inject()` · `ctx.systemPrompt.section()` · `defineTool` + `ctx.tools.register()` · the `{kind: 'plugin', plugin, form: 'notice', summary}` message shape.
+
+`dsh` is at a release candidate. Until a range is pinned, treat every `dsh` upgrade as a possible breaking change.
+
+## Installation
+
+> **Nothing is published, and there is no code to build yet.** These commands
+> describe the intended path once implementation lands. They do not work today.
+
+```sh
+cd <repo-root>
+pnpm install
+pnpm build
+dsh plugin --profile web add .        # relative path, anchored to the current directory
+```
+
+Then **restart** `dsh web`. A change to `dsh.profile.bundles` is not covered by `patchReload: live`, so a restart is required rather than optional.
+
+A package that declares `dsh.bundle.patch` is merged into `dsh.profile.bundles` automatically — no manual profile editing. Because the development install is a `link:`, the knowledge base lands in `errors/` inside this repository, which is what makes the git-based device sync work. See [Where the knowledge base lives](#where-the-knowledge-base-lives).
+
+## Usage
+
+> **Not implemented.** There is no tool to call yet. The shapes below are the
+> specified interface, shown so the design can be judged, not because they run.
+
+Ask the agent about a failure, or call a tool directly:
+
+```json
+{
+  "query": "EPERM: operation not permitted, rename",
+  "full": false
+}
+```
+
+That block in [Injection](#injection-when-it-speaks-and-how-much) is the entire product. It replaces a diagnosis that would otherwise cost 800–3000 tokens.
+
+### Parameters
+
+| Tool         | Parameters                                                          | Defaults / notes                                                | Returns                                                     |
+| ------------ | ------------------------------------------------------------------- | --------------------------------------------------------------- | ----------------------------------------------------------- |
+| `err_lookup` | `query` (raw text, a signature, or an ID), `full?`                  | `full: false` returns the entry without the raw sample          | The matching entry; on a miss, `null` plus the three closest |
+| `err_record` | `id?`, `message?`, `fix?`, `status?`, `note?`, `category?`          | `id` and `message` — one of the two; `status` is `fixed`/`wontfix`/`open` | The ID and whether it was newly created              |
+| `err_list`   | `cat?`, `status?`, `limit?`                                         | `limit` defaults to 20                                          | ID, title and hit count — no bodies                          |
+| `err_forget` | `id`, `reason?`                                                     | Moves the entry to `ERRORS.archive.md` for the record; nothing is really deleted | Whether the entry was archived |
+| `err_stats`  | `scope?`                                                            | `scope` is `session` or `all`                                   | Entry count, hit rate, estimated tokens saved, resolved path |
+
+All five declare their output through `output.schema` + `render`, so what reaches the model is controlled plain text.
+
+## Configuration
+
+### Where these settings go
+
+Settings live in the profile patch, not in a separate config file:
+
+```yaml
+# cordis.patch.yml
+- insert:
+    - id: err-kb
+      name: dsh-errkb
+      config:
+        fuzzyThreshold: 0.72
+        inject: hit-only
+```
+
+### Settings
+
+| Setting              | Default                            | Purpose                                                                                        |
+| -------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `kbDir`              | `''`                               | Empty resolves automatically: config → plugin root `errors/` → `$DSH_HOME/errkb/` ([details](#where-the-knowledge-base-lives)). A relative path is resolved against the plugin package root |
+| `idPrefix`           | `'E-'`                             | Entry ID prefix (§8 of the design document; it is not in §10's table)                           |
+| `idWidth`            | `4`                                | Zero-padding width for IDs                                                                      |
+| `capture`            | `['tool','command','llm','agent']` | Capture toggles, each can be off                                                                |
+| `captureExitCodes`   | `true`                             | Record commands that exited non-zero                                                            |
+| `transientThreshold` | `5`                                | Occurrences before a transient LLM error earns an ID                                            |
+| `fuzzyThreshold`     | `0.72`                             | Similarity needed for a fuzzy match (range 0.5–1.0)                                             |
+| `captureFix`         | `'prompt-once'`                    | `prompt-once` or `off`: ask the model once to write a fix for a new entry                        |
+| `inject`             | `'hit-only'`                       | `hit-only`, `always` or `off`                                                                   |
+| `sessionDigest`      | `'counts'`                         | Session-opening digest: `off`, `counts` or `index` (at most 10 entries)                          |
+| `systemPromptHint`   | `true`                             | The 50-token behavioural section                                                                |
+| `providers`          | `['*']`                            | Restrict which providers are recorded (e.g. `deepseek-official`)                                 |
+| `share`              | `'public'`                         | Redaction strength — `public` or `private` ([details](#privacy-and-redaction))                   |
+| `maxEntries`         | `200`                              | Above this, entries archive to `ERRORS.archive.md`                                              |
+| `maxSampleChars`     | `500`                              | Cap on the stored raw sample                                                                    |
+| `exportDir`          | `''`                               | Optional device-local export; empty disables it (e.g. an Obsidian vault path on one machine)     |
+
+## Privacy and redaction
+
+Everything the plugin does is local: no network calls, no telemetry, and no model is asked to classify, match or summarise anything. The only thing that leaves the machine is whatever you commit.
+
+Redaction is **mandatory and happens before storage, not before sharing** — unredacted text never reaches the disk at all. It exists in memory only, long enough to compute a signature. Before any text is written, these are replaced:
+
+- credentials and headers: `sk-*`, `Bearer *`, `api[_-]?key=*`, `token=*`, `authorization:`;
+- long base64 runs, hex strings of 32 characters or more, e-mail addresses;
+- the raw `requestId`;
+- with `share: 'public'` (the default) additionally: absolute paths collapse to `<path>` and the raw sample is capped at 500 characters.
+
+With `share: 'private'` project-relative paths are kept, which makes self-diagnosis easier but assumes the file stays on your machine.
+
+**The design assumes the knowledge base is tracked by git** so it can sync across devices, with redaction as the safety net. If you would rather not, set `share: 'private'` and add `ERRORS.md` / `ERRORS.archive.md` to `.gitignore`.
+
+There is no `SECURITY.md` yet, and no security policy — until there is, treat any leak of unredacted text into the document as a bug and report it. See [Open decisions](#open-decisions).
+
+## Failure modes and safety
+
+The plugin's own mistakes must never become the agent's problem. Each risk below has a matching implementation constraint in §13 of the design document.
+
+| Risk                                              | Constraint                                                                                             |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| A listener throws and the turn closes             | Every listener is wrapped in `try/catch`; failure degrades to "not recorded this time", counted in `state.json` and reported at a throttled rate |
+| Stealing recovery from `dsh-llm-retry`            | `agent/request-error` must `await next()` and return the result unchanged — observe, never take over    |
+| A write blocking the turn                         | Local write, 3 retries, 500 ms timeout; a timeout skips that record silently and never throws            |
+| Multiple processes writing at once (web + headless) | `.lock` file opened with `wx` (10 s expiry, preemptible) plus a temp file and an atomic `rename`        |
+| Read-only disk or permission failure              | Falls back to `$DSH_HOME/errkb/`; if that fails too, that record is skipped silently                     |
+| A corrupted document                              | Strict parsing; on parse failure the original is saved aside as `ERRORS.corrupt-<timestamp>.md` and new entries are appended only — **a corrupt document is never rewritten** |
+| Secrets or privacy leaking into a public repo     | Mandatory redaction before storage; with `share: 'public'` even the `requestId` is dropped               |
+| Unbounded growth slowing the context              | `maxEntries` archiving, 400-character entries, injection de-duplication and the per-step/turn/session caps |
+
+**What it will never do:** take over retries, throw into a turn, rewrite a corrupt document, block a turn on a write, or send anything off the machine.
+
+## Known limitations
+
+**This does not take over retries, by design.** `dsh-llm-retry` owns retry, and every retry is billed again. The `agent/request-error` listener must `await next()` and return the result unchanged. A plugin that "helpfully" recovered here would be fighting the retry owner's correctness contract.
+
+**Fuzzy matching can merge two errors that only look alike.** At 0.72 similarity a near miss is still a miss. The mitigation is social rather than algorithmic: near misses are labelled as approximate in the injected text, and any entry can be marked as a misjudgment to take it out of injection permanently.
+
+**The knowledge base is only as good as what gets written into it.** An entry recorded without a fix will be injected without a fix — a notice that spends tokens to say nothing. This is why new entries prompt once for the fix, and why `err_stats` reports how many open entries are doing nothing useful.
+
+**It can be a net loss.** Below roughly a 5% hit rate the standing cost exceeds the savings; the caps exist so the loss stays small, not so it disappears. See [Cost model](#cost-model).
+
+**Knowledge travels by git, and that is the only channel.** No cloud service, no remote sharing. Two devices converge by merging append-only Markdown, which is reliable but manual.
+
+**One shared knowledge base across all projects.** Entries carry a project field to tell them apart, but there is no per-project isolation yet.
+
+**No GUI panel.** Rejected for now. The design document records it as a post-release candidate.
+
+## Verifying it works
+
+### Acceptance criteria
+
+Seven criteria define "done" (§1 of the design document), each with its own verification method:
+
+| #  | Criterion                                                              | How to verify                                                          |
+| -- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| S1 | Errors are filed automatically and get a unique ID from `E-0001`        | Trigger one failing tool call → a new numbered block appears in `ERRORS.md` |
+| S2 | The same error is never numbered twice — even as path, line, PID and timestamp change | Re-run in a different temp directory with a different line number → hit count +1, same ID |
+| S3 | A hit injects a ≤ 120-token known fix                                   | A `plugin`-sourced notice appears in the session and the model stops re-diagnosing |
+| S4 | A new error gets its fix written into the entry after resolution        | The model calls `err_record`, or answers the one-shot prompt             |
+| S5 | No plugin failure interrupts a turn or affects retry                    | Unit test injects an exception → the listener swallows it and `agent/request-error` still returns the downstream result |
+| S6 | The document is editable by hand and by model, and the index can be rebuilt | Hand-edit a fix in `ERRORS.md` → the next hit reads the edited text   |
+| S7 | Cross-device safe: no absolute paths, no secrets                         | Full-text search for `D:\`, `sk-`, `Bearer` returns zero hits           |
+
+### Manual acceptance
+
+1. `dsh --profile web --dump-config` shows the `err-kb` entry (proving the bundle layer works).
+2. Trigger a command that must fail (for example, a drive letter that does not exist) → `## E-0001` appears.
+3. Re-run the same class of failure from a different temp directory or line → still `E-0001`, hit count +1.
+4. A plugin notice line appears in the session, and the model does **not** re-diagnose.
+5. `err_stats` prints the resolved KB path, the hit rate and the estimated savings.
+
+## Roadmap
+
+The design is complete and the work is broken into **eighteen tasks** across seven milestones. Each task's deliverable and acceptance criteria are in [Full task breakdown](#full-task-breakdown) below.
+
+| State | Tasks                                                                                   |
+| ----- | --------------------------------------------------------------------------------------- |
+| 🔜    | T01–T04 — project skeleton: package, tsconfig, tsdown, vitest, bundle patch             |
+| 🔜    | T05–T09 — the pure local layer: paths, signature, redact, store, match                  |
+| 🔜    | T10–T11 — the capture layer: classification, and the first two hooks                    |
+| 🔜    | T12–T14 — the injection layer: notice text, four injection points, resolution detection |
+| 🔜    | T15 — the five agent tools                                                              |
+| 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
+| 🔜    | T18 — optional: Obsidian export                                                         |
+
+Nothing is checked off yet. T18 can be dropped at any point without touching the main line.
+
+### Milestone mapping
+
+The design document plans in phases P0–P7 (§15); the task list numbers the same work T01–T18. They line up like this:
+
+| Phase          | Tasks   | Completion gate                                                              |
+| -------------- | ------- | ---------------------------------------------------------------------------- |
+| P0 (current)   | —       | The design document is written and **you have answered §17** — this is the gate nothing has passed yet |
+| P1             | T01–T04 | `pnpm typecheck` passes                                                      |
+| P2             | T05–T09 | Unit tests green, coverage gate met                                          |
+| P3             | T10–T11 | A guaranteed-failing command produces `E-0001`                               |
+| P4             | T12–T14 | A repeated failure is injected and the model stops re-diagnosing              |
+| P5             | T15     | The model can call `err_lookup` and `err_record`                             |
+| P6             | T16–T17 | `--dump-config` shows the entry; one cloud and one local error are each recorded |
+| P7 (optional)  | T18     | The exported file is readable                                                |
+
+### Not covered by any task
+
+Two gaps are worth stating plainly rather than hiding behind the checkboxes:
+
+- **Publishing has no task.** The status table lists "Published to npm" and §17 Q1 admits the npm name has not been checked for availability, but none of T01–T18 covers checking the name or publishing a release. Nor does any task set up CI.
+- **`err_export` is missing from the README's task list.** §15 P7 mentions an `err_export` single-file JSON backup alongside the Obsidian export; T18 only mentions the Obsidian export. Either the tool returns or the phase description is trimmed.
+
+### Full task breakdown
+
+| #     | Task                                   | Deliverable                                                                  | Acceptance                                                                                           |
+| ----- | -------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| ☐ T01 | Initialize `package.json`              | Name, entry point, bundle patch, peer dependencies                           | `pnpm install` succeeds                                                                              |
+| ☐ T02 | Configure tsconfig and tsdown          | `tsconfig.json`, `tsdown.config.ts`                                          | `pnpm build` emits `lib/index.js`                                                                    |
+| ☐ T03 | Configure vitest and the coverage gate | `vitest.config.ts`, `tests/`                                                 | `pnpm test` runs                                                                                     |
+| ☐ T04 | Bundle patch and an empty `apply`      | Plugin entry: `name`, `inject`, `Config`, `apply`                            | `pnpm typecheck` passes                                                                              |
+| ☐ T05 | Resolve the KB path                    | `src/paths.ts` — three-tier resolution, startup log                          | Each of the three cases returns the expected path                                                    |
+| ☐ T06 | Normalize and fingerprint              | `src/signature.ts`                                                           | Changed path, line, PID, timestamp or UUID → same signature; different errors → different signatures |
+| ☐ T07 | Redact                                 | `src/redact.ts`                                                              | Zero hits in the output, asserted                                                                    |
+| ☐ T08 | Store the document                     | `src/store.ts` — parse, render, append, archive, lock, atomic write          | Round-trip identity; hand-edited fixes read back; 50 concurrent records yield 50 unique IDs          |
+| ☐ T09 | Match                                  | `src/match.ts` — exact, fuzzy, code fallback, mis-flag fallback              | Boundary values 0.71 / 0.72 / 0.73 behave as specified                                               |
+| ☐ T10 | Classify, and suppress noise           | `src/capture.ts`                                                             | Transient errors get no ID until the threshold; capture off writes nothing                           |
+| ☐ T11 | Wire the first two hooks               | `agent/error`, `tools/result` listeners                                      | A guaranteed-failing command produces `E-0001`                                                       |
+| ☐ T12 | Generate notices                       | `src/inject.ts` — template, caps, dedup                                      | Caps hold; source shape and summary length are exact                                                 |
+| ☐ T13 | Wire the four injection points         | `tools/post-execute`, `agent/pre-step`, `agent/session-start`, system prompt | A repeated failure is injected, and the model stops re-diagnosing                                    |
+| ☐ T14 | Detect resolution                      | `src/resolve-detect.ts`                                                      | A `fixed` entry goes silent after one notice                                                         |
+| ☐ T15 | Build the five tools                   | `src/tools.ts`                                                               | The model can call `err_lookup` and `err_record`                                                     |
+| ☐ T16 | Listen to `agent/request-error`        | The listener, plus LLM failure classification                                | The returned value is object-identical to the downstream result                                      |
+| ☐ T17 | Install into the web profile           | `dsh plugin --profile web add .`                                             | `--dump-config` shows the entry; one cloud and one local error are each recorded                     |
+| ☐ T18 | Optional: Obsidian export              | `exportDir` export                                                           | The exported file is readable                                                                        |
+
+## Development
+
+There is no build yet. Once the skeleton exists (T01–T04) the expected commands are:
+
+```sh
+pnpm install
+pnpm build            # tsdown → lib/
+pnpm test             # vitest
+pnpm typecheck        # tsc --noEmit
+pnpm lint             # oxlint
+pnpm format           # prettier --write .
+```
+
+### Test plan
+
+The test plan is §14 of the design document. Coverage gate: statements and lines ≥ 99. Seven groups are planned:
+
+1. `signature` — path, line, PID, timestamp and UUID changes keep the signature stable; different errors differ; empty, ANSI-only and very long strings do not crash.
+2. `match` — exact hits, Jaccard boundaries at 0.71 / 0.72 / 0.73, short-message code fallback, mis-flagged entries never injected.
+3. `redact` — `sk-`, `Bearer`, `api_key=`, long hex, e-mail and absolute paths all replaced; zero hits asserted in the output.
+4. `store` — write/parse round-trip identity; hand-edited fixes read back; a corrupt file takes the save-aside + append-only path; the archive threshold fires; IDs increase monotonically; **50 concurrent records yield 50 unique IDs and a still-parseable document**.
+5. `capture` — four payload classes classified correctly; transient rate limits uncounted until the threshold; every capture toggle off means zero writes.
+6. `inject` — text length caps, ≤ 1 notice per step, ≤ 3 per turn, source shape `{kind:'plugin',plugin:'err-kb',form:'notice',summary}` with `summary` ≤ 120 characters.
+7. `plugin` — a fake context confirms listeners are registered, exceptions are swallowed, and the `agent/request-error` return value is identical (object identity asserted) to the downstream result.
+
+The concurrency test in group 4 is the one that matters most, because it is the failure mode that would corrupt the only authoritative file.
+
+## Troubleshooting
+
+Everything below is a specification of intended behaviour, not a report of observed behaviour — nothing runs yet.
+
+| Symptom                                            | What to check                                                                                                   |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| "Is it even loaded?"                               | The one-line startup log prints the resolved KB path; `dsh --profile web --dump-config` shows the `err-kb` entry. Restart after installing — `dsh.profile.bundles` is not hot-reloaded |
+| "Where did my errors go?"                          | `err_stats` prints the resolved path. Start from [Where the knowledge base lives](#where-the-knowledge-base-lives) |
+| "Nothing is being recorded."                       | Check the `capture` toggles, `captureExitCodes`, and whether the failure is transient (`RATE_LIMIT`, `SERVER`, `TIMEOUT`, `TRANSPORT`, `EMPTY_RESPONSE`) — those are counted until `transientThreshold`, and every counter is visible in `state.json` |
+| "Writes are silently skipped."                     | That is the designed behaviour when the KB directory is unwritable, the lock cannot be taken, or a write times out after 3 retries and 500 ms. Check the KB directory's permissions and whether the fallback to `$DSH_HOME/errkb/` took effect |
+| "Injection is too noisy."                          | `inject: 'off'` stops it entirely while capture keeps recording; `systemPromptHint: false` removes the standing 50-token section; `sessionDigest: 'off'` removes the opening digest |
+| "One entry keeps being injected with the wrong fix." | Mark it `wontfix` via `err_record`, or flag it as a misjudgment — it stops being injected automatically but still counts |
+| "`ERRORS.md` looks broken."                        | The plugin never rewrites a document it cannot parse: the original is saved as `ERRORS.corrupt-<timestamp>.md` and new entries append after it. Repair the saved copy and restore it |
+| "I edited a fix by hand and nothing changed."      | Hand edits win over the index, so this should not happen — check that the edit is inside the `- 解法:` field and above the next `- ` field, then delete `errors.index.json` to force a rebuild |
+| "I want to start over."                            | Delete `state.json` (counters), delete `errors.index.json` (cache). Both are rebuilt. Deleting `ERRORS.md` deletes the knowledge — that is the only file that matters |
+| "Counters disagree across my two machines."        | Expected: counters are machine-local and deliberately not in git. Only the knowledge is shared |
+
+## Uninstall
+
+**Not specified yet.** The design document does not cover removing the plugin, and there is no task for it — see [Open decisions](#open-decisions).
+
+What is true today: installing a plugin adds an entry to `dsh.profile.bundles` (via the bundle patch), so a clean removal is removing that entry and restarting `dsh web`. The knowledge base is nothing but files in a directory the plugin only ever appends to; nothing the plugin does will delete it, so back it up or delete it by hand.
+
+## Open decisions
+
+**Nothing starts until these are answered.** The design document is at P0, and §17 holds eight questions with proposed defaults; answering them is the gate for P1 (see [Milestone mapping](#milestone-mapping)). Write answers in the "your answer" column of §17, or anything at all in the §19 annotation area of [`docs/设计说明书.md`](docs/设计说明书.md).
+
+| # | Question                                                             | Proposed default                                                        | State |
+| - | -------------------------------------------------------------------- | ----------------------------------------------------------------------- | ----- |
+| 1 | Package name / plugin id / tool prefix / ID prefix                    | `dsh-errkb` / `err-kb` / `err_` / `E-` — **npm name availability unchecked** | Open |
+| 2 | Language of the document's field names                                | Chinese labels + English machine keys                                    | Open  |
+| 3 | Accept that counters stay out of git and only knowledge syncs          | Accept                                                                   | Open  |
+| 4 | Commit `errors/` into the GitHub repository                            | Yes, with mandatory redaction as the safety net                           | Open  |
+| 5 | Scope of reuse                                                         | One shared KB for all projects, with a project field on each entry        | Open  |
+| 6 | `captureExitCodes` default                                             | On — command failures are the most reusable case                           | Open  |
+| 7 | Which P7 extras (GUI panel / auto-running fixes / Obsidian export)     | Obsidian export only for now                                              | Open  |
+| 8 | Package root location                                                  | `<repo-root>`                                  | Open  |
+
+Two further gaps are **not** in §17 and will need an answer before the README can stop saying "not specified":
+
+- **Requirements**: no Node, pnpm or OS support statement, and no `engines` range.
+- **Distribution and maintenance**: no task covers publishing to npm, checking that the npm name is free, CI, or uninstalling.
+
+## Future work
+
+Recorded in §18 of the design document. None of it is scheduled; T18 can be dropped at any point without touching the main line.
+
+1. **Pre-flight instead of post-mortem** — a `tools/pre-execute` guard that recognises a known-to-fail command and blocks it with the recorded fix attached, collapsing a three-round failure loop into one message. Complements `dsh-repeat-tool-reminder`, which catches repeated calls: that plugin handles repetition, this one handles "known to fail".
+2. **`err_fix` — replay the fix** — when an entry records a deterministic command, offer `err_fix <id>` to re-run it after approval, closing the recycle → reuse loop. Requires `dsh-user-approval`, so off by default.
+3. **Expose the knowledge base as a skill** — publish it as `SKILL.md` through `dsh-skill`'s filesystem discovery so the model reads the parts it needs instead of the whole document.
+4. **Environment fingerprint and fix confidence** — record os / node / pnpm / shell / provider / model per entry, and warn "may not apply here" when a hit comes from a different environment.
+5. **Compaction-friendly by construction** — `dsh-compaction-tool-result-pruner` drops old tool results, but these facts live on disk and are injected on demand; that is the structural advantage over keeping fixes in conversation history.
+6. **A visible token ledger** — integrate `@deepseek-ai/dsh-token-meter` / `dsh-session-stats` so `err_stats` can print "injected 0.9k / at least 8k saved by the mechanism". Without numbers, thresholds cannot be tuned.
+7. **Seed entries** — ship `CONTEXT_OVERFLOW`, `NO_ADAPTER` and the Windows Chinese-path `EPERM` as pre-filled entries so a fresh install is valuable on day one.
+8. **Team sharing** — because the document is in git, putting `errors/` in a team repository makes it a shared pitfall knowledge base; an `err_promote` could raise a local entry to a public one.
+9. **Web GUI panel** — the full version of the rejected option: a third-party package can declare `dsh.client` (`platform: 'web'`) plus a client module for a list view, hit curves and a settings page. Rebuilding the web artifacts makes it expensive; evaluate after P6 is stable.
+10. **Reverse use** — `err_list --status open` is a ready-made "what is still broken in this project" list, usable as an issue draft or an onboarding document for newcomers.
+
+## Contributing
+
+There is no code to contribute yet — which makes this the cheapest moment to disagree with the design.
+
+- **The design document is the source of truth.** If this README and [`docs/设计说明书.md`](docs/设计说明书.md) disagree, the design document wins (and this README has a bug worth reporting).
+- **Feedback goes in the document.** §17 is a table with an empty "your answer" column; §19 is an annotation area. Both are meant to be written in directly.
+- **Keep the two READMEs in sync.** `README.md` is English and `README.zh-CN.md` is Chinese, and they have already drifted once. Any change to one belongs in the same change as the other.
+- **Language rules for the repository**: English for `README.md` and for code, comments, commits and documentation; Chinese for `README.zh-CN.md` and for the design document, which is written in Chinese by choice.
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+<sub>A third-party plugin for DeepSeek Harness. Not affiliated with DeepSeek.</sub>

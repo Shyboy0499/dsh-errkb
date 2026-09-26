@@ -1,0 +1,19 @@
+# Dependencies and build output
+node_modules/
+lib/
+*.tsbuildinfo
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# errkb runtime knowledge base, machine-local or derived files.
+# ERRORS.md and ERRORS.archive.md are deliberately NOT ignored: that knowledge
+# is meant to travel between machines by git. Everything below is not.
+errors/state.json
+errors/errors.index.json
+errors/.machine.json
+errors/.lock
+errors/ERRORS.corrupt-*.md
