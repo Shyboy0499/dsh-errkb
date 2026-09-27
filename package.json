@@ -37,6 +37,7 @@
     "@deepseek-ai/schemastery": "3.18.2"
   },
   "devDependencies": {
+    "@types/node": "^22.20.0",
     "@vitest/coverage-v8": "^2.1.9",
     "oxlint": "^1.80.0",
     "prettier": "^3.9.6",

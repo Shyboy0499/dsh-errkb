@@ -13,6 +13,11 @@ export default defineConfig({
   outDir: "lib",
   format: ["esm"],
   platform: "node",
+  // platform "node" makes fixedExtension default to true, which forces .mjs and
+  // .d.mts regardless of the package type. `exports` in package.json points at
+  // lib/index.js and lib/index.d.ts, so the build has to name its files the way
+  // the package type does.
+  fixedExtension: false,
   target: "node22",
   dts: true,
   clean: true,
