@@ -1,6 +1,6 @@
 # dsh-errkb · 报错回收再利用
 
-![状态](https://img.shields.io/badge/status-design%20stage-orange)
+![状态](https://img.shields.io/badge/status-scaffolding%20landed-yellow)
 ![许可证](https://img.shields.io/github/license/jingchangzhao-gif/dsh-errkb)
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
@@ -10,14 +10,19 @@
 
 `dsh-errkb` 是一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）插件。它把模型遇到的报错变成一份带编号、人可编辑的知识库 —— 然后在模型**开始诊断之前**，把已记录的解法塞回上下文。
 
-> **状态：设计阶段。** 目前没有任何代码。设计文档已写完、正在审查中 ——
-> 其中 §17 还有 8 项未拍板 —— 工作被拆成 **18 个 task**，归入 7 个里程碑。
-> **现在这里的东西一律装不上。** 下面每条命令描述的都是目标路径，不是能跑的东西。
+> **状态：P1 骨架已落地。** 设计文档已写完、正在审查中 —— 其中 §17 还有 8 项
+> 未拍板 —— 工作被拆成 **18 个 task**，归入 7 个里程碑。**T01–T04 已完成：**
+> 包装得上、构建得出、过得了类型检查与 lint、格式与测试也都跑得通，CI 在每次
+> PR 上都会执行这五步。
+>
+> **插件本身仍然什么都不做。** `apply` 只打一行启动日志，也还没装进任何 profile
+> （那是 T17），所以现在没有任何可用行为。下面标着「尚未实现」的部分，依然只是
+> 目标路径的描述。
 >
 > - 设计文档：[`docs/设计说明书.md`](docs/设计说明书.md) —— 19 节
 > - 它将来会做什么：[它怎么工作](#它怎么工作)
 > - 你的数据将落在哪里：[知识库落在哪里](#知识库落在哪里)
-> - 卡在哪一步：[待拍板的事项](#待拍板的事项) —— §17 不补齐，什么都不会开始
+> - 卡在哪一步：[待拍板的事项](#待拍板的事项) —— §17 仍未补齐
 
 ## 目录
 
@@ -54,9 +59,10 @@
 | `README.md`、`README.zh-CN.md`                                           | ✅ 就位         |
 | `LICENSE`                                                                | ✅ 就位         |
 | `.github/` —— CI、隐私守卫与 PR 模板                                      | ✅ 就位         |
-| `package.json`、`tsconfig.json`、`tsdown.config.ts`、`vitest.config.ts`  | ⛔ 未开始       |
-| `cordis.patch.yml` —— bundle patch                                       | ⛔ 未开始       |
-| `src/index.ts` —— 插件入口（`name`、`inject`、`Config`、`apply`）        | ⛔ 未开始       |
+| `package.json`、`tsconfig.json`、`tsdown.config.ts`、`vitest.config.ts`  | ✅ 就位（T01–T03） |
+| `.prettierignore`、`.gitattributes` —— 格式与行尾策略                    | ✅ 就位          |
+| `cordis.patch.yml` —— bundle patch                                       | ✅ 就位（T04）    |
+| `src/index.ts` —— 插件入口（`name`、`inject`、`Config`、`apply`）        | ✅ 就位（T04），仅入口、无行为 |
 | `src/paths.ts` —— 库目录解析                                             | ⛔ 未开始       |
 | `src/signature.ts` —— 规范化与指纹                                       | ⛔ 未开始       |
 | `src/redact.ts` —— 强制脱敏                                              | ⛔ 未开始       |
@@ -67,7 +73,7 @@
 | `src/inject.ts` —— 通知生成与硬上限                                      | ⛔ 未开始       |
 | `src/resolve-detect.ts` —— 解决检测                                      | ⛔ 未开始       |
 | `src/tools.ts` —— 五个工具                                               | ⛔ 未开始       |
-| `tests/`                                                                 | ⛔ 未开始       |
+| `tests/`                                                                 | ✅ 已配置（T03），尚无用例 |
 | 装进 `web` profile                                                       | ⛔ 未开始       |
 | 发布到 npm                                                               | ⛔ 未开始 —— 还没有 task 覆盖它，见[开发路线图](#开发路线图) |
 
@@ -266,8 +272,9 @@ errors.index.json
 
 ## 安装
 
-> **什么都没发布，也还没有代码可构建。** 下面的命令描述的是实现落地之后的
-> 目标路径。**今天跑不通。**
+> **什么都没发布，插件也还没装进任何地方。** 前两条命令从 T01–T04 起可用 ——
+> `pnpm install` 与 `pnpm build` 都退出 0 并产出 `lib/index.js` —— 但把包加进
+> profile 要到 T17 才验证，而且装进去也没有行为可观察。
 
 ```sh
 cd <repo-root>
@@ -425,7 +432,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 | 状态 | Tasks                                                                |
 | ---- | -------------------------------------------------------------------- |
-| 🔜   | T01–T04 —— 工程骨架：package、tsconfig、tsdown、vitest、bundle patch |
+| ✅   | T01–T04 —— 工程骨架：package、tsconfig、tsdown、vitest、bundle patch |
 | 🔜   | T05–T09 —— 纯本地层：paths、signature、redact、store、match          |
 | 🔜   | T10–T11 —— 采集层：分类，以及前两个钩子                              |
 | 🔜   | T12–T14 —— 注入层：通知文本、四个注入点、解决检测                    |
@@ -433,7 +440,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | 🔜   | T16–T17 —— LLM 失败接入，以及安装进 web profile                      |
 | 🔜   | T18 —— 可选：Obsidian 导出                                           |
 
-目前一项都没勾。T18 随时可以砍掉，不影响主线。
+T01–T04 已勾选并合并。其余仍开放；T18 随时可以砍掉，不影响主线。
 
 ### 阶段对照
 
@@ -441,8 +448,8 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 | 阶段         | Tasks   | 完成标志                                                              |
 | ------------ | ------- | --------------------------------------------------------------------- |
-| P0（当前）   | ——      | 设计文档已写完，且**你已补齐 §17** —— 这就是至今没有任何东西越过的闸门 |
-| P1           | T01–T04 | `pnpm typecheck` 通过                                                 |
+| P0           | ——      | 设计文档已写完，且**你已补齐 §17** —— §17 仍未补齐                  |
+| P1           | T01–T04 | ✅ `pnpm typecheck` 通过 —— 本地与 CI 均已验证                       |
 | P2           | T05–T09 | 单测全绿，覆盖率达标                                                  |
 | P3           | T10–T11 | 一条必然失败的命令产出 `E-0001`                                       |
 | P4           | T12–T14 | 重复的失败被自动注入，模型不再重新诊断                                |
@@ -461,10 +468,10 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 | #     | Task                       | 产出                                                                         | 验收                                                               |
 | ----- | -------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| ☐ T01 | 初始化 `package.json`      | 包名、入口、bundle patch、peer 依赖                                          | `pnpm install` 无错                                                |
-| ☐ T02 | 配置 tsconfig 与 tsdown    | `tsconfig.json`、`tsdown.config.ts`                                          | `pnpm build` 产出 `lib/index.js`                                   |
-| ☐ T03 | 配置 vitest 与覆盖率门槛   | `vitest.config.ts`、`tests/`                                                 | `pnpm test` 跑通                                                   |
-| ☐ T04 | bundle patch 与空 `apply`  | 插件入口：`name`、`inject`、`Config`、`apply`                                | `pnpm typecheck` 通过                                              |
+| ☑ T01 | 初始化 `package.json`      | 包名、入口、bundle patch、peer 依赖                                          | `pnpm install` 无错                                                |
+| ☑ T02 | 配置 tsconfig 与 tsdown    | `tsconfig.json`、`tsdown.config.ts`                                          | `pnpm build` 产出 `lib/index.js`                                   |
+| ☑ T03 | 配置 vitest 与覆盖率门槛   | `vitest.config.ts`、`tests/`                                                 | `pnpm test` 跑通                                                   |
+| ☑ T04 | bundle patch 与空 `apply`  | 插件入口：`name`、`inject`、`Config`、`apply`                                | `pnpm typecheck` 通过                                              |
 | ☐ T05 | 解析库路径                 | `src/paths.ts` —— 三级解析、启动日志                                         | 三种情形各返回预期路径                                             |
 | ☐ T06 | 规范化与指纹               | `src/signature.ts`                                                           | 路径、行号、PID、时间戳、UUID 变化 → 指纹不变；不同报错 → 指纹不同 |
 | ☐ T07 | 脱敏                       | `src/redact.ts`                                                              | 断言输出中 0 命中                                                  |
@@ -482,7 +489,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 ## 开发
 
-目前还没有构建。骨架就位后（T01–T04），预期命令是：
+骨架已就位（T01–T04），下面这些命令都能跑。`build`、`typecheck`、`lint`、`test`、`format:check` 正是 CI 在每次 PR 上执行的五步：
 
 ```sh
 pnpm install
