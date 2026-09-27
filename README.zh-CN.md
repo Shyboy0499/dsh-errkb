@@ -1,6 +1,6 @@
 # dsh-errkb · 报错回收再利用
 
-![状态](https://img.shields.io/badge/status-scaffolding%20landed-yellow)
+![状态](https://img.shields.io/badge/status-P2%20in%20progress-yellow)
 ![许可证](https://img.shields.io/github/license/jingchangzhao-gif/dsh-errkb)
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
@@ -10,10 +10,10 @@
 
 `dsh-errkb` 是一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）插件。它把模型遇到的报错变成一份带编号、人可编辑的知识库 —— 然后在模型**开始诊断之前**，把已记录的解法塞回上下文。
 
-> **状态：P1 骨架已落地。** 设计文档已写完、正在审查中 —— 其中 §17 还有 8 项
-> 未拍板 —— 工作被拆成 **18 个 task**，归入 7 个里程碑。**T01–T04 已完成：**
-> 包装得上、构建得出、过得了类型检查与 lint、格式与测试也都跑得通，CI 在每次
-> PR 上都会执行这五步。
+> **状态：P2 进行中。** 设计文档已写完、正在审查中 —— 其中 §17 还有 8 项未拍板
+> —— 工作被拆成 **18 个 task**，归入 7 个里程碑。**T01–T05 已完成：** 包装得上、
+> 构建得出、过得了类型检查与 lint、格式与测试也都跑得通，CI 在每次 PR 上都会执行
+> 这五步；T05 的知识库目录解析作为纯本地层的第一个模块落地。
 >
 > **插件本身仍然什么都不做。** `apply` 只打一行启动日志，也还没装进任何 profile
 > （那是 T17），所以现在没有任何可用行为。下面标着「尚未实现」的部分，依然只是
@@ -63,7 +63,7 @@
 | `.prettierignore`、`.gitattributes` —— 格式与行尾策略                    | ✅ 就位          |
 | `cordis.patch.yml` —— bundle patch                                       | ✅ 就位（T04）    |
 | `src/index.ts` —— 插件入口（`name`、`inject`、`Config`、`apply`）        | ✅ 就位（T04），仅入口、无行为 |
-| `src/paths.ts` —— 库目录解析                                             | ⛔ 未开始       |
+| `src/paths.ts` —— 库目录解析                                             | ✅ 就位（T05），覆盖 100% |
 | `src/signature.ts` —— 规范化与指纹                                       | ⛔ 未开始       |
 | `src/redact.ts` —— 强制脱敏                                              | ⛔ 未开始       |
 | `src/store.ts` —— 解析、渲染、追加、归档                                 | ⛔ 未开始       |
@@ -73,7 +73,7 @@
 | `src/inject.ts` —— 通知生成与硬上限                                      | ⛔ 未开始       |
 | `src/resolve-detect.ts` —— 解决检测                                      | ⛔ 未开始       |
 | `src/tools.ts` —— 五个工具                                               | ⛔ 未开始       |
-| `tests/`                                                                 | ✅ 已配置（T03），尚无用例 |
+| `tests/`                                                                 | ✅ `paths` 39 个用例（T05） |
 | 装进 `web` profile                                                       | ⛔ 未开始       |
 | 发布到 npm                                                               | ⛔ 未开始 —— 还没有 task 覆盖它，见[开发路线图](#开发路线图) |
 
@@ -472,7 +472,7 @@ T01–T04 已勾选并合并。其余仍开放；T18 随时可以砍掉，不影
 | ☑ T02 | 配置 tsconfig 与 tsdown    | `tsconfig.json`、`tsdown.config.ts`                                          | `pnpm build` 产出 `lib/index.js`                                   |
 | ☑ T03 | 配置 vitest 与覆盖率门槛   | `vitest.config.ts`、`tests/`                                                 | `pnpm test` 跑通                                                   |
 | ☑ T04 | bundle patch 与空 `apply`  | 插件入口：`name`、`inject`、`Config`、`apply`                                | `pnpm typecheck` 通过                                              |
-| ☐ T05 | 解析库路径                 | `src/paths.ts` —— 三级解析、启动日志                                         | 三种情形各返回预期路径                                             |
+| ☑ T05 | 解析库路径                 | `src/paths.ts` —— 三级解析、启动日志                                         | 三种情形各返回预期路径                                             |
 | ☐ T06 | 规范化与指纹               | `src/signature.ts`                                                           | 路径、行号、PID、时间戳、UUID 变化 → 指纹不变；不同报错 → 指纹不同 |
 | ☐ T07 | 脱敏                       | `src/redact.ts`                                                              | 断言输出中 0 命中                                                  |
 | ☐ T08 | 文档存储                   | `src/store.ts` —— 解析、渲染、追加、归档、锁、原子写                         | 写读往返一致；手改的解法能读回；并发 50 次记录产出 50 个唯一编号   |

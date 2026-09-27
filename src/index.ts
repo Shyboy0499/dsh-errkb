@@ -3,6 +3,7 @@
 // and every registration point below is marked with the task that owns it.
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
+import { defaultProbe, formatKbLog, resolveKbDir } from "./paths";
 
 // The plugin's runtime name, matching `id` in cordis.patch.yml. The installed
 // harness plugins follow the same rule: dsh-spill-policy exports "spill-policy",
@@ -39,13 +40,10 @@ export const Config = z.object({
   exportDir: z.string().default(""),
 });
 
-// The whole behaviour of this task: one startup line proving the plugin loaded.
-// TODO(T05): resolve the real knowledge-base directory and keep this line, then
-// delete the placeholder wording.
-export function apply(ctx: Context, _config: Schemastery.TypeT<typeof Config>) {
-  ctx.logger.info(
-    "dsh-errkb loaded; the knowledge base path is resolved and logged in T05",
-  );
+// The whole behaviour of this task: one startup line, now carrying the resolved
+// directory and the tier that produced it (T05).
+export function apply(ctx: Context, config: Schemastery.TypeT<typeof Config>) {
+  ctx.logger.info(formatKbLog(resolveKbDir(config.kbDir, defaultProbe())));
 
   // TODO(T11): register the agent/error and tools/result listeners here.
   // TODO(T13): register tools/post-execute, agent/pre-step and
