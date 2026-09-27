@@ -37,10 +37,13 @@ jobs:
             echo "::notice::No package.json on this ref - skipping the toolchain."
           fi
 
+      # No `version` input on purpose. The action reads `packageManager` from
+      # package.json when the input is absent, so CI installs exactly the pnpm
+      # the repository pins and the two can never drift apart. Passing a
+      # different value here is not a warning but a hard failure:
+      # pnpm/action-setup throws "Multiple versions of pnpm specified".
       - uses: pnpm/action-setup@v4
         if: steps.project.outputs.present == 'true'
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         if: steps.project.outputs.present == 'true'

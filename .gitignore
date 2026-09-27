@@ -3,6 +3,9 @@ node_modules/
 lib/
 *.tsbuildinfo
 
+# Coverage output from `vitest run --coverage`
+coverage/
+
 # Editor and OS noise
 .vscode/
 .idea/
