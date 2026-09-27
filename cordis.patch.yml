@@ -1,0 +1,12 @@
+# dsh-errkb bundle registration. package.json declares dsh.bundle.patch, so
+# adding this package to a profile merges the entry below automatically and no
+# profile editing is needed.
+#
+# Only the two settings the README shows as an example are written out; every
+# other field keeps the default declared by `Config` in src/index.ts.
+- insert:
+    - id: err-kb
+      name: dsh-errkb
+      config:
+        fuzzyThreshold: 0.72
+        inject: hit-only
