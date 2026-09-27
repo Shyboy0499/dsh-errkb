@@ -1,6 +1,6 @@
 # dsh-errkb
 
-![Status](https://img.shields.io/badge/status-design%20stage-orange)
+![Status](https://img.shields.io/badge/status-scaffolding%20landed-yellow)
 ![License](https://img.shields.io/github/license/jingchangzhao-gif/dsh-errkb)
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
@@ -10,16 +10,21 @@
 
 `dsh-errkb` is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) plugin that turns the errors a model hits into a numbered, human-editable knowledge base — then pushes the recorded fix back into context *before* the model starts diagnosing.
 
-> **Status: design stage.** There is no code yet. The design document is
-> written and under review — eight decisions in its §17 are still open — and
-> the work is broken into [eighteen tasks](#roadmap) across seven milestones.
-> **Nothing here is installable today.** Every command below describes the
-> intended path, not a working one.
+> **Status: scaffolding landed (P1).** The design document is written and under
+> review — eight decisions in its §17 are still open — and the work is broken
+> into [eighteen tasks](#roadmap) across seven milestones. **T01–T04 are done:**
+> the package installs, builds, type checks, lints, formats and tests, and CI
+> runs all five on every pull request.
+>
+> **The plugin still does nothing.** `apply` writes one startup line, and it is
+> not installed into any profile yet (that is T17), so there is no behaviour to
+> use. Everything marked "not implemented" below is still a description of the
+> intended path.
 >
 > - Design document: [`docs/设计说明书.md`](docs/设计说明书.md) — 19 sections, Chinese
 > - What the plugin will do: [How it works](#how-it-works)
 > - Where your data will land: [Where the knowledge base lives](#where-the-knowledge-base-lives)
-> - What is blocking the start: [Open decisions](#open-decisions) — nothing begins until §17 is answered
+> - What is blocking the start: [Open decisions](#open-decisions) — §17 is still unanswered
 
 ## Contents
 
@@ -56,9 +61,10 @@
 | `README.md`, `README.zh-CN.md`                                            | ✅ In place                |
 | `LICENSE`                                                                 | ✅ In place                |
 | `.github/` — CI, privacy guard and PR template                            | ✅ In place                |
-| `package.json`, `tsconfig.json`, `tsdown.config.ts`, `vitest.config.ts`   | ⛔ Not started             |
-| `cordis.patch.yml` — bundle patch                                         | ⛔ Not started             |
-| `src/index.ts` — plugin entry (`name`, `inject`, `Config`, `apply`)       | ⛔ Not started             |
+| `package.json`, `tsconfig.json`, `tsdown.config.ts`, `vitest.config.ts`   | ✅ In place (T01–T03)      |
+| `.prettierignore`, `.gitattributes` — format and line-ending policy       | ✅ In place                |
+| `cordis.patch.yml` — bundle patch                                         | ✅ In place (T04)          |
+| `src/index.ts` — plugin entry (`name`, `inject`, `Config`, `apply`)       | ✅ In place (T04), entry only — no behaviour |
 | `src/paths.ts` — KB directory resolution                                  | ⛔ Not started             |
 | `src/signature.ts` — normalization and fingerprinting                     | ⛔ Not started             |
 | `src/redact.ts` — mandatory redaction                                     | ⛔ Not started             |
@@ -69,7 +75,7 @@
 | `src/inject.ts` — notice generation and hard caps                         | ⛔ Not started             |
 | `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
 | `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
-| `tests/`                                                                  | ⛔ Not started             |
+| `tests/`                                                                  | ✅ Configured (T03), no suites yet |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -269,8 +275,10 @@ The extension points below were verified against the local installation, not aga
 
 ## Installation
 
-> **Nothing is published, and there is no code to build yet.** These commands
-> describe the intended path once implementation lands. They do not work today.
+> **Nothing is published, and the plugin is not installed anywhere yet.** The
+> first two commands work as of T01–T04 — `pnpm install` and `pnpm build` both
+> exit 0 and produce `lib/index.js` — but adding the package to a profile is
+> untested until T17, and there is no behaviour to observe once it is there.
 
 ```sh
 cd <repo-root>
@@ -428,7 +436,7 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 
 | State | Tasks                                                                                   |
 | ----- | --------------------------------------------------------------------------------------- |
-| 🔜    | T01–T04 — project skeleton: package, tsconfig, tsdown, vitest, bundle patch             |
+| ✅    | T01–T04 — project skeleton: package, tsconfig, tsdown, vitest, bundle patch             |
 | 🔜    | T05–T09 — the pure local layer: paths, signature, redact, store, match                  |
 | 🔜    | T10–T11 — the capture layer: classification, and the first two hooks                    |
 | 🔜    | T12–T14 — the injection layer: notice text, four injection points, resolution detection |
@@ -436,7 +444,7 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 | 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
 | 🔜    | T18 — optional: Obsidian export                                                         |
 
-Nothing is checked off yet. T18 can be dropped at any point without touching the main line.
+T01–T04 are checked off and merged. The rest are open; T18 can be dropped at any point without touching the main line.
 
 ### Milestone mapping
 
@@ -444,8 +452,8 @@ The design document plans in phases P0–P7 (§15); the task list numbers the sa
 
 | Phase          | Tasks   | Completion gate                                                              |
 | -------------- | ------- | ---------------------------------------------------------------------------- |
-| P0 (current)   | —       | The design document is written and **you have answered §17** — this is the gate nothing has passed yet |
-| P1             | T01–T04 | `pnpm typecheck` passes                                                      |
+| P0             | —       | The design document is written and **you have answered §17** — §17 is still unanswered |
+| P1             | T01–T04 | ✅ `pnpm typecheck` passes — verified locally and in CI                       |
 | P2             | T05–T09 | Unit tests green, coverage gate met                                          |
 | P3             | T10–T11 | A guaranteed-failing command produces `E-0001`                               |
 | P4             | T12–T14 | A repeated failure is injected and the model stops re-diagnosing              |
@@ -464,10 +472,10 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 
 | #     | Task                                   | Deliverable                                                                  | Acceptance                                                                                           |
 | ----- | -------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| ☐ T01 | Initialize `package.json`              | Name, entry point, bundle patch, peer dependencies                           | `pnpm install` succeeds                                                                              |
-| ☐ T02 | Configure tsconfig and tsdown          | `tsconfig.json`, `tsdown.config.ts`                                          | `pnpm build` emits `lib/index.js`                                                                    |
-| ☐ T03 | Configure vitest and the coverage gate | `vitest.config.ts`, `tests/`                                                 | `pnpm test` runs                                                                                     |
-| ☐ T04 | Bundle patch and an empty `apply`      | Plugin entry: `name`, `inject`, `Config`, `apply`                            | `pnpm typecheck` passes                                                                              |
+| ☑ T01 | Initialize `package.json`              | Name, entry point, bundle patch, peer dependencies                           | `pnpm install` succeeds                                                                              |
+| ☑ T02 | Configure tsconfig and tsdown          | `tsconfig.json`, `tsdown.config.ts`                                          | `pnpm build` emits `lib/index.js`                                                                    |
+| ☑ T03 | Configure vitest and the coverage gate | `vitest.config.ts`, `tests/`                                                 | `pnpm test` runs                                                                                     |
+| ☑ T04 | Bundle patch and an empty `apply`      | Plugin entry: `name`, `inject`, `Config`, `apply`                            | `pnpm typecheck` passes                                                                              |
 | ☐ T05 | Resolve the KB path                    | `src/paths.ts` — three-tier resolution, startup log                          | Each of the three cases returns the expected path                                                    |
 | ☐ T06 | Normalize and fingerprint              | `src/signature.ts`                                                           | Changed path, line, PID, timestamp or UUID → same signature; different errors → different signatures |
 | ☐ T07 | Redact                                 | `src/redact.ts`                                                              | Zero hits in the output, asserted                                                                    |
@@ -485,7 +493,7 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 
 ## Development
 
-There is no build yet. Once the skeleton exists (T01–T04) the expected commands are:
+The skeleton exists (T01–T04), so all of these work. `build`, `typecheck`, `lint`, `test` and `format:check` are exactly what CI runs on every pull request:
 
 ```sh
 pnpm install
