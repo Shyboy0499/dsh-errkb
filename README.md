@@ -1,6 +1,6 @@
 # dsh-errkb
 
-![Status](https://img.shields.io/badge/status-scaffolding%20landed-yellow)
+![Status](https://img.shields.io/badge/status-P2%20in%20progress-yellow)
 ![License](https://img.shields.io/github/license/jingchangzhao-gif/dsh-errkb)
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
@@ -10,11 +10,12 @@
 
 `dsh-errkb` is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) plugin that turns the errors a model hits into a numbered, human-editable knowledge base — then pushes the recorded fix back into context *before* the model starts diagnosing.
 
-> **Status: scaffolding landed (P1).** The design document is written and under
-> review — eight decisions in its §17 are still open — and the work is broken
-> into [eighteen tasks](#roadmap) across seven milestones. **T01–T04 are done:**
-> the package installs, builds, type checks, lints, formats and tests, and CI
-> runs all five on every pull request.
+> **Status: P2 in progress.** The design document is written and under review —
+> eight decisions in its §17 are still open — and the work is broken into
+> [eighteen tasks](#roadmap) across seven milestones. **T01–T05 are done:** the
+> package installs, builds, type checks, lints, formats and tests, CI runs all
+> five on every pull request, and the knowledge-base directory resolution (T05)
+> has landed as the first module of the pure local layer.
 >
 > **The plugin still does nothing.** `apply` writes one startup line, and it is
 > not installed into any profile yet (that is T17), so there is no behaviour to
@@ -65,7 +66,7 @@
 | `.prettierignore`, `.gitattributes` — format and line-ending policy       | ✅ In place                |
 | `cordis.patch.yml` — bundle patch                                         | ✅ In place (T04)          |
 | `src/index.ts` — plugin entry (`name`, `inject`, `Config`, `apply`)       | ✅ In place (T04), entry only — no behaviour |
-| `src/paths.ts` — KB directory resolution                                  | ⛔ Not started             |
+| `src/paths.ts` — KB directory resolution                                  | ✅ In place (T05), 100% covered |
 | `src/signature.ts` — normalization and fingerprinting                     | ⛔ Not started             |
 | `src/redact.ts` — mandatory redaction                                     | ⛔ Not started             |
 | `src/store.ts` — parse, render, append, archive                           | ⛔ Not started             |
@@ -75,7 +76,7 @@
 | `src/inject.ts` — notice generation and hard caps                         | ⛔ Not started             |
 | `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
 | `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
-| `tests/`                                                                  | ✅ Configured (T03), no suites yet |
+| `tests/`                                                                  | ✅ 39 cases for `paths` (T05) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -476,7 +477,7 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 | ☑ T02 | Configure tsconfig and tsdown          | `tsconfig.json`, `tsdown.config.ts`                                          | `pnpm build` emits `lib/index.js`                                                                    |
 | ☑ T03 | Configure vitest and the coverage gate | `vitest.config.ts`, `tests/`                                                 | `pnpm test` runs                                                                                     |
 | ☑ T04 | Bundle patch and an empty `apply`      | Plugin entry: `name`, `inject`, `Config`, `apply`                            | `pnpm typecheck` passes                                                                              |
-| ☐ T05 | Resolve the KB path                    | `src/paths.ts` — three-tier resolution, startup log                          | Each of the three cases returns the expected path                                                    |
+| ☑ T05 | Resolve the KB path                    | `src/paths.ts` — three-tier resolution, startup log                          | Each of the three cases returns the expected path                                                    |
 | ☐ T06 | Normalize and fingerprint              | `src/signature.ts`                                                           | Changed path, line, PID, timestamp or UUID → same signature; different errors → different signatures |
 | ☐ T07 | Redact                                 | `src/redact.ts`                                                              | Zero hits in the output, asserted                                                                    |
 | ☐ T08 | Store the document                     | `src/store.ts` — parse, render, append, archive, lock, atomic write          | Round-trip identity; hand-edited fixes read back; 50 concurrent records yield 50 unique IDs          |
