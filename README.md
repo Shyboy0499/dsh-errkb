@@ -1,6 +1,6 @@
 # dsh-errkb
 
-![Status](https://img.shields.io/badge/status-P2%20in%20progress-yellow)
+![Status](https://img.shields.io/badge/status-P2%20complete-yellow)
 ![License](https://img.shields.io/github/license/jingchangzhao-gif/dsh-errkb)
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
@@ -10,14 +10,14 @@
 
 `dsh-errkb` is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) plugin that turns the errors a model hits into a numbered, human-editable knowledge base — then pushes the recorded fix back into context *before* the model starts diagnosing.
 
-> **Status: P2 in progress.** The design document is written and under review —
+> **Status: P2 complete.** The design document is written and under review —
 > six of the eight decisions in its §17 are still open (Q2 and Q4 are decided) —
 > and the work is broken into [eighteen tasks](#roadmap) across seven milestones.
-> **T01–T08 are done:** the package installs, builds, type checks, lints, formats
-> and tests, CI runs all five on every pull request, and the pure local layer has
-> four modules: knowledge-base directory resolution (T05), error normalization
-> and fingerprinting (T06), mandatory redaction (T07) and the `ERRORS.md` store
-> (T08). Only matching (T09) is left in that layer.
+> **T01–T09 are done:** the package installs, builds, type checks, lints, formats
+> and tests, CI runs all five on every pull request, and the pure local layer is
+> complete: knowledge-base directory resolution (T05), error normalization and
+> fingerprinting (T06), mandatory redaction (T07), the `ERRORS.md` store (T08)
+> and matching (T09). The capture layer (T10–T11) is next.
 >
 > **The plugin still does nothing.** `apply` writes one startup line and calls
 > none of those modules, and it is not installed into any profile yet (that is
@@ -74,13 +74,13 @@
 | `src/redact.ts`, `src/redact-patterns.ts` — mandatory redaction           | ✅ In place (T07), 100% covered — not called by anything yet |
 | `src/store.ts` — parse, render, append, archive                           | ✅ In place (T08), 100% statements and lines — not called by anything yet |
 | `seeds/ERRORS.seed.md` — three curated, redacted seed entries             | ✅ In place (T08) — not copied into any knowledge base yet |
-| `src/match.ts` — exact, fuzzy and fallback matching                       | ⛔ Not started             |
+| `src/match.ts` — exact, fuzzy and fallback matching                       | ✅ In place (T09), 100% statements and lines — not called by anything yet |
 | `src/state.ts` — `state.json`, `.machine.json`, environment fingerprint   | ⛔ Not started             |
 | `src/capture.ts` — hook payloads and the noise rule                       | ⛔ Not started             |
 | `src/inject.ts` — notice generation and hard caps                         | ⛔ Not started             |
 | `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
 | `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
-| `tests/`                                                                  | ✅ 184 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 58 and `seeds` 5 (T08) |
+| `tests/`                                                                  | ✅ 224 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 58 and `seeds` 5 (T08), `match` 40 (T09) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -410,6 +410,8 @@ The plugin's own mistakes must never become the agent's problem. Each risk below
 
 **Fuzzy matching can merge two errors that only look alike.** At 0.72 similarity a near miss is still a miss. The mitigation is social rather than algorithmic: near misses are labelled as approximate in the injected text, and any entry can be marked as a misjudgment to take it out of injection permanently.
 
+**0.72 is a placeholder, not a measured value.** The T09 tests prove the threshold behaves as coded at 0.71 / 0.72 / 0.73 and that Chinese text is tokenized into bigrams; they do not prove 0.72 is the right number. That needs the labelled corpus of real errors and look-alike pairs proposed in [`docs/discussions.md`](docs/discussions.md) §3, which does not exist yet.
+
 **The knowledge base is only as good as what gets written into it.** An entry recorded without a fix will be injected without a fix — a notice that spends tokens to say nothing. This is why new entries prompt once for the fix, and why `err_stats` reports how many open entries are doing nothing useful.
 
 **It can be a net loss.** Below roughly a 5% hit rate the standing cost exceeds the savings; the caps exist so the loss stays small, not so it disappears. See [Cost model](#cost-model).
@@ -450,15 +452,14 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 
 | State | Tasks                                                                                   |
 | ----- | --------------------------------------------------------------------------------------- |
-| ✅    | T01–T08 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), paths, signature, redact and store |
-| 🔜    | T09 — match                                                                             |
+| ✅    | T01–T09 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), paths, signature, redact, store and match |
 | 🔜    | T10–T11 — the capture layer: classification, and the first two hooks                    |
 | 🔜    | T12–T14 — the injection layer: notice text, four injection points, resolution detection |
 | 🔜    | T15 — the five agent tools                                                              |
 | 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
 | 🔜    | T18 — optional: Obsidian export                                                         |
 
-T01–T08 are checked off. T01–T05 are merged; T06–T08 are in review. The rest are open; T18 can be dropped at any point without touching the main line.
+T01–T09 are checked off. T01–T05 are merged; T06–T09 are in review. The rest are open; T18 can be dropped at any point without touching the main line.
 
 ### Milestone mapping
 
@@ -468,7 +469,7 @@ The design document plans in phases P0–P7 (§15); the task list numbers the sa
 | -------------- | ------- | ---------------------------------------------------------------------------- |
 | P0             | —       | The design document is written and **you have answered §17** — two of eight answered (Q2, Q4) |
 | P1             | T01–T04 | ✅ `pnpm typecheck` passes — verified locally and in CI                       |
-| P2             | T05–T09 | Unit tests green, coverage gate met                                          |
+| P2             | T05–T09 | ✅ Unit tests green; every T05–T09 module at 100% statements and lines (the global gate also counts `src/index.ts`, which T11 wires up) |
 | P3             | T10–T11 | A guaranteed-failing command produces `E-0001`                               |
 | P4             | T12–T14 | A repeated failure is injected and the model stops re-diagnosing              |
 | P5             | T15     | The model can call `err_lookup` and `err_record`                             |
@@ -494,7 +495,7 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 | ☑ T06 | Normalize and fingerprint              | `src/signature.ts`                                                           | Changed path, line, PID, timestamp or UUID → same signature; different errors → different signatures |
 | ☑ T07 | Redact                                 | `src/redact.ts`                                                              | Zero hits in the output, asserted                                                                    |
 | ☑ T08 | Store the document                     | `src/store.ts` — parse, render, append, archive, lock, atomic write          | Round-trip identity; hand-edited fixes read back; 50 concurrent records yield 50 unique IDs          |
-| ☐ T09 | Match                                  | `src/match.ts` — exact, fuzzy, code fallback, mis-flag fallback              | Boundary values 0.71 / 0.72 / 0.73 behave as specified                                               |
+| ☑ T09 | Match                                  | `src/match.ts` — exact, fuzzy, code fallback, mis-flag fallback              | Boundary values 0.71 / 0.72 / 0.73 behave as specified                                               |
 | ☐ T10 | Classify, and suppress noise           | `src/capture.ts`                                                             | Transient errors get no ID until the threshold; capture off writes nothing                           |
 | ☐ T11 | Wire the first two hooks               | `agent/error`, `tools/result` listeners                                      | A guaranteed-failing command produces `E-0001`                                                       |
 | ☐ T12 | Generate notices                       | `src/inject.ts` — template, caps, dedup                                      | Caps hold; source shape and summary length are exact                                                 |
