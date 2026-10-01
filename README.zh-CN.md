@@ -77,7 +77,7 @@
 | `src/inject.ts` —— 通知生成与硬上限                                      | ⛔ 未开始       |
 | `src/resolve-detect.ts` —— 解决检测                                      | ⛔ 未开始       |
 | `src/tools.ts` —— 五个工具                                               | ⛔ 未开始       |
-| `tests/`                                                                 | ✅ 183 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 57 与 `seeds` 5（T08） |
+| `tests/`                                                                 | ✅ 184 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 58 与 `seeds` 5（T08） |
 | 装进 `web` profile                                                       | ⛔ 未开始       |
 | 发布到 npm                                                               | ⛔ 未开始 —— 还没有 task 覆盖它，见[开发路线图](#开发路线图) |
 
@@ -391,7 +391,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | 监听器抛错 → 回合直接被关闭                 | 所有监听器包 `try/catch`；失败降级为「本次不记录」，在 `state.json` 累计并节流上报                        |
 | 抢走 `dsh-llm-retry` 的恢复权               | `agent/request-error` 必须 `await next()` 并原样返回 —— 只观察，不接管                                     |
 | 写文件阻塞回合                              | 本地写 + 3 次重试 + 500 ms 超时；超时则跳过该次记录，永不抛错                                              |
-| 多进程同写（web + headless 并发）           | `.lock` 文件（`wx` 打开，10 s 过期可抢占）+ 临时文件 + `rename` 原子替换                                   |
+| 多进程同写（web + headless 并发）           | `.lock` 文件（`wx` 打开，10 s 过期可抢占；抢占者按 token 只删自己判定过期的那把锁）+ 临时文件 + `rename` 原子替换                                   |
 | 磁盘只读、权限失败                          | 自动回退 `$DSH_HOME/errkb/`；再失败则本次静默跳过                                                          |
 | 文档被写坏                                  | 严格解析；解析失败时原文件另存为 `ERRORS.corrupt-<时间戳>.md`，新条目只做追加 —— **损坏的文档永不回写**     |
 | 密钥/隐私泄进公开仓库                       | 落盘前强制脱敏；`share: 'public'` 时连 `requestId` 都不保留                                                |

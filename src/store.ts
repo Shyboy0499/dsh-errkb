@@ -623,16 +623,31 @@ export function createStore(
   const dir = dirname(files.errors);
   const clean = (text: string) => redact(text.replace(/\r/g, ""), o).trim();
 
+  // Take over the stale lock whose token was `held`, and nothing else. Two
+  // waiters can judge the same lock stale; the first removes it and creates its
+  // own, and without this re-check the second would then remove that fresh
+  // lock and both would hold "the lock". Tokens are unique per acquisition, so
+  // an unchanged token means the file is still the one judged stale. What is
+  // left is the gap between this read and the remove: another waiter would
+  // have to remove and re-create the lock inside it. That is two filesystem
+  // calls racing one, not a judgment that can be seconds old, and closing it
+  // fully would need an atomic compare-and-delete the filesystem does not
+  // offer.
+  async function removeIfUnchanged(held: string | undefined): Promise<void> {
+    if ((await fs.readFile(files.lock)) === held) await fs.remove(files.lock);
+  }
+
   async function withLock<T>(fn: () => Promise<T>): Promise<T> {
     await fs.mkdir(dir);
     const token = `${process.pid}-${randomBytes(6).toString("hex")}`;
     const deadline = clock.now().getTime() + o.lockTimeoutMs;
     for (;;) {
       if (await fs.createExclusive(files.lock, token)) break;
+      const held = await fs.readFile(files.lock);
       const mtime = await fs.mtimeMs(files.lock);
       const now = clock.now().getTime();
       if (mtime !== undefined && now - mtime > o.lockStaleMs) {
-        await fs.remove(files.lock);
+        await removeIfUnchanged(held);
         continue;
       }
       if (now >= deadline) throw new LockTimeoutError(files.lock);

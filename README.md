@@ -80,7 +80,7 @@
 | `src/inject.ts` — notice generation and hard caps                         | ⛔ Not started             |
 | `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
 | `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
-| `tests/`                                                                  | ✅ 183 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 57 and `seeds` 5 (T08) |
+| `tests/`                                                                  | ✅ 184 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 58 and `seeds` 5 (T08) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -396,7 +396,7 @@ The plugin's own mistakes must never become the agent's problem. Each risk below
 | A listener throws and the turn closes             | Every listener is wrapped in `try/catch`; failure degrades to "not recorded this time", counted in `state.json` and reported at a throttled rate |
 | Stealing recovery from `dsh-llm-retry`            | `agent/request-error` must `await next()` and return the result unchanged — observe, never take over    |
 | A write blocking the turn                         | Local write, 3 retries, 500 ms timeout; a timeout skips that record silently and never throws            |
-| Multiple processes writing at once (web + headless) | `.lock` file opened with `wx` (10 s expiry, preemptible) plus a temp file and an atomic `rename`        |
+| Multiple processes writing at once (web + headless) | `.lock` file opened with `wx` (10 s expiry, preemptible; a waiter removes only the stale lock it saw, by token) plus a temp file and an atomic `rename`        |
 | Read-only disk or permission failure              | Falls back to `$DSH_HOME/errkb/`; if that fails too, that record is skipped silently                     |
 | A corrupted document                              | Strict parsing; on parse failure the original is saved aside as `ERRORS.corrupt-<timestamp>.md` and new entries are appended only — **a corrupt document is never rewritten** |
 | Secrets or privacy leaking into a public repo     | Mandatory redaction before storage; with `share: 'public'` even the `requestId` is dropped               |

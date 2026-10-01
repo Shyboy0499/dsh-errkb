@@ -726,6 +726,83 @@ describe("store: lock and atomic write", () => {
     expect(fs.files.has(files.lock)).toBe(false);
   });
 
+  it("two waiters on one stale lock: the second does not remove the first one's fresh lock", async () => {
+    const clock = new FakeClock();
+    const shared = new MemoryFs(clock);
+    await shared.writeFile(files.lock, "crashed writer");
+    clock.t += 10_001;
+
+    // A takes over the stale lock, then pauses while holding it until B has
+    // finished deciding what to do about the lock it judged stale earlier.
+    let aToken: string | undefined;
+    let aHolds!: () => void;
+    const aHolding = new Promise<void>((done) => (aHolds = done));
+    let bDecided!: () => void;
+    const bDone = new Promise<void>((done) => (bDecided = done));
+    const fsA: StoreFs = Object.create(shared);
+    fsA.createExclusive = async (path, data) => {
+      const created = await shared.createExclusive(path, data);
+      if (created && path === files.lock) {
+        aToken = data;
+        aHolds();
+      }
+      return created;
+    };
+    fsA.readFile = async (path) => {
+      if (path === files.errors) await bDone;
+      return shared.readFile(path);
+    };
+
+    // B judges the same lock stale, then stalls until A holds a fresh one.
+    let lockOnDiskWhenBDecided: string | undefined;
+    let stalled = false;
+    const fsB: StoreFs = Object.create(shared);
+    fsB.mtimeMs = async (path) => {
+      const mtime = await shared.mtimeMs(path);
+      if (!stalled) {
+        stalled = true;
+        await aHolding;
+      }
+      return mtime;
+    };
+    const decide = () => {
+      lockOnDiskWhenBDecided ??= shared.files.get(files.lock)?.data;
+      bDecided();
+    };
+    fsB.createExclusive = async (path, data) => {
+      const created = await shared.createExclusive(path, data);
+      if (created && aToken !== undefined) decide();
+      return created;
+    };
+    const clockB: StoreClock = {
+      now: clock.now,
+      random: clock.random,
+      sleep: async (ms) => {
+        decide();
+        await clock.sleep(ms);
+      },
+    };
+
+    const a = createStore(files, {}, fsA, clock);
+    const b = createStore(files, {}, fsB, clockB);
+    const [resultA, resultB] = await Promise.all([
+      a.append(input(1)),
+      b.append(input(2)),
+    ]);
+
+    expect(aToken).toBeDefined();
+    expect(lockOnDiskWhenBDecided).toBe(aToken);
+    expect(new Set([resultA.id, resultB.id])).toEqual(
+      new Set(["E-0001", "E-0002"]),
+    );
+    const document = parseDocument(shared.files.get(files.errors)?.data ?? "");
+    expect(document.blocks.map((block) => block.entry.id)).toEqual([
+      "E-0001",
+      "E-0002",
+    ]);
+    expect(shared.files.has(files.lock)).toBe(false);
+  });
+
   it("gives up after the timeout while a live lock is held", async () => {
     const { store, fs, clock } = memoryStore({
       lockTimeoutMs: 200,
