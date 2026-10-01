@@ -60,6 +60,9 @@ const TRANSIENT = new Set<string>(TRANSIENT_LLM_CODES);
 /** A headline longer than this is cut, with an ellipsis. */
 export const HEADLINE_MAX_CHARS = 200;
 
+/** A command quoted in a headline is cut to this many characters first. */
+export const COMMAND_MAX_CHARS = 120;
+
 /** Capture settings; every one has a default. */
 export interface CaptureOptions {
   /** The sources to capture (the `capture` setting); anything else is ignored. */
@@ -105,6 +108,12 @@ export interface CommandResultInput {
   kind: "command";
   toolName: string;
   text: string;
+  /**
+   * The command that ran, from the tool call's arguments, when the hook can
+   * find one. Without it, every silent failure of one shell tool would read
+   * `exit code N` and share one ID.
+   */
+  command?: string;
 }
 
 /** Anything capture can be handed. */
@@ -237,12 +246,12 @@ function codeIn(line: string): string | undefined {
   return undefined;
 }
 
-/** Cut a line to {@link HEADLINE_MAX_CHARS} characters. */
-function cap(line: string): string {
+/** Cut a line to `max` characters, the last one an ellipsis. */
+function cap(line: string, max = HEADLINE_MAX_CHARS): string {
   const chars = Array.from(line);
-  if (chars.length <= HEADLINE_MAX_CHARS) return line;
+  if (chars.length <= max) return line;
   return `${chars
-    .slice(0, HEADLINE_MAX_CHARS - 1)
+    .slice(0, max - 1)
     .join("")
     .trimEnd()}…`;
 }
@@ -345,8 +354,8 @@ function build(
   raw: string,
   code: string | undefined,
   prefix = "",
+  headline: Headline = extractHeadline(raw),
 ): CaptureRecord {
-  const headline = extractHeadline(raw);
   const finalCode = code ?? headline.code;
   const line = headline.line === "" ? NO_MESSAGE : headline.line;
   const message =
@@ -360,6 +369,19 @@ function build(
     displayCategory,
     signature: signature(category, message),
   };
+}
+
+/**
+ * The command as it leads a headline: its first non-blank line, without ANSI
+ * escapes, cut to {@link COMMAND_MAX_CHARS}; `undefined` when there is none.
+ */
+function commandLine(command: string | undefined): string | undefined {
+  const first = (command ?? "")
+    .replace(ANSI, "")
+    .split(/\r?\n|\r/)
+    .map((line) => line.trim())
+    .find((line) => line !== "");
+  return first === undefined ? undefined : cap(first, COMMAND_MAX_CHARS);
 }
 
 /** The record for one input, or `undefined` when it is not an error at all. */
@@ -400,12 +422,25 @@ function recordFor(
       // The marker is the harness's, not the command's: leave it out of the
       // headline, or it would be the last line of every output.
       const body = input.text.replace(EXIT_MARKER, "");
+      const text = body.trim() === "" ? `exit code ${n}` : body;
+      const headline = extractHeadline(text);
+      // A headline that names no code - `exit code 1`, `1 test failed` - says
+      // nothing about which command failed, so the command leads it. Otherwise
+      // two unrelated silent failures would share one signature: a false
+      // merge, the worst outcome matching can have.
+      const command = commandLine(input.command);
+      const line =
+        command !== undefined && headline.code === undefined
+          ? { line: cap(`${command} → ${headline.line}`) }
+          : headline;
       const record = build(
         "command-exit",
         `command-exit:${input.toolName}`,
         `command-exit / ${input.toolName}`,
-        body.trim() === "" ? `exit code ${n}` : body,
+        text,
         undefined,
+        "",
+        line,
       );
       return { ...record, raw: input.text, exitCode: n };
     }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CAPTURE_SOURCES,
   CATEGORY_BY_SOURCE,
+  COMMAND_MAX_CHARS,
   DEFAULT_CAPTURE_OPTIONS,
   HEADLINE_MAX_CHARS,
   PERMANENT_LLM_CODES,
@@ -489,6 +490,73 @@ describe("classify: the four sources", () => {
     expect(record.message).toBe("exit code 127");
     expect(record.exitCode).toBe(127);
     expect(record.raw).toBe("\n[exit code: 127]\n");
+  });
+
+  it("command: two different silent commands get two different signatures", () => {
+    const silent = (command: string) =>
+      run({ kind: "command", toolName: "sh", text: "[exit code: 1]", command })
+        .record;
+    const test = silent("pnpm test");
+    const lint = silent("pnpm lint");
+    expect(test.message).toBe("pnpm test → exit code 1");
+    expect(test.title).toBe("[command-exit:sh] pnpm test → exit code 1");
+    expect(lint.message).toBe("pnpm lint → exit code 1");
+    expect(test.signature).not.toBe(lint.signature);
+    expect(test.signature).toBe(
+      signature("command-exit", "pnpm test → exit code 1"),
+    );
+  });
+
+  it("command: the same silent command keeps its signature when only its directory changes", () => {
+    const silent = (command: string) =>
+      run({ kind: "command", toolName: "sh", text: "[exit code: 1]", command })
+        .record.signature;
+    expect(silent("cat /srv/app/build/one.txt")).toBe(
+      silent("cat /var/tmp/other/one.txt"),
+    );
+  });
+
+  it("command: a headline without a code is led by the command too", () => {
+    const failed = (command: string) =>
+      run({
+        kind: "command",
+        toolName: "sh",
+        text: "1 test failed\n[exit code: 1]",
+        command,
+      }).record;
+    expect(failed("pnpm test").message).toBe("pnpm test → 1 test failed");
+    expect(failed("pnpm test").signature).not.toBe(
+      failed("cargo test").signature,
+    );
+  });
+
+  it("command: a code-bearing headline stands alone, whatever the command", () => {
+    const text = `${TSC.join("\n")}\n[exit code: 2]`;
+    const a = run({ kind: "command", toolName: "sh", text, command: "tsc" });
+    const b = run({
+      kind: "command",
+      toolName: "sh",
+      text,
+      command: "pnpm tsc",
+    });
+    expect(a.record.message).toBe(TSC[0]);
+    expect(a.record.code).toBe("TS2307");
+    expect(a.record.signature).toBe(b.record.signature);
+  });
+
+  it("command: only the first non-blank line of the command, ANSI-free and capped", () => {
+    const silent = (command: string) =>
+      run({ kind: "command", toolName: "sh", text: "[exit code: 3]", command })
+        .record.message;
+    expect(silent("\n  \u001b[1mset -e\u001b[0m  \nmake all\n")).toBe(
+      "set -e → exit code 3",
+    );
+    const long = silent(`echo ${"x".repeat(300)}`);
+    expect(long.endsWith("… → exit code 3")).toBe(true);
+    expect(Array.from(long.split(" → ")[0] as string)).toHaveLength(
+      COMMAND_MAX_CHARS,
+    );
+    expect(silent("   \n\t")).toBe("exit code 3");
   });
 
   it("command: the headline ignores a marker in the middle of the output", () => {

@@ -8,6 +8,8 @@ None of this changes behaviour. It is input for T06–T13 and for §17.
 
 ## 1. Coexistence with other notice-injecting plugins
 
+**1.2 decided (T12):** yes. A hit ends with "Known fix: try this first, before re-diagnosing or researching." instead of "Apply this; do not re-diagnose." It orders the work rather than forbidding any, so it does not contradict a research nudge on the same step. Implemented in `src/inject.ts` (`WORDING`). 1.1 and 1.3 stay open.
+
 **Problem.** Our caps (≤ 1 notice per step, ≤ 3 per turn, ≤ 2 per ID per session, §7) only count our own notices. Other `dsh` plugins inject on the same hooks:
 
 - `dsh-research-nudge` prepends a "go and research" notice through `tools/post-execute` → `additionalContexts` — our injection point.
@@ -73,6 +75,8 @@ The matched code (`ERR_PNPM_…`, `EPERM`, `TS2307`, `ModuleNotFoundError`) is s
 ---
 
 ## 4. Fix trust: a negative signal
+
+**Decided (T12):** the proposal below, implemented in `src/inject.ts` (`FixTrust`, `trustLevel`). Answers: 4.1 — the 1 / 2 thresholds are accepted (`DOUBT_AFTER`, `SUPPRESS_AFTER`). 4.2 — "recurred" means the same entry is captured again later in the same turn that injected its fix. 4.3 — yes: the counts are kept against a hash of the fix text, so editing the fix starts them again. A recorded success (`succeeded`, fed by resolution detection in T14) lifts the suppression. The state is a plain serializable object behind an injectable `TrustStore`, held in memory until `src/state.ts` persists it to `state.json`; it is never written into `ERRORS.md`. Listing suppressed IDs in `err_stats` belongs to T15.
 
 **Problem.** Nothing in the design notices that a fix did not work. If E-0007 is injected and the same error recurs on the next step, the next notice still says "apply this, do not re-diagnose". Only a human marking `wontfix` or a misjudgment stops it.
 
