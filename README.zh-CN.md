@@ -48,6 +48,7 @@
 - [卸载](#卸载)
 - [待拍板的事项](#待拍板的事项)
 - [后续想法](#后续想法)
+- [相关项目](#相关项目)
 - [参与与反馈](#参与与反馈)
 - [许可证](#许可证)
 
@@ -572,6 +573,26 @@ pnpm format:check     # prettier --check .（CI 跑的就是这条）
 8. **团队共享** —— 因为文档进 git，把 `errors/` 放进团队仓库就等于一个共享踩坑库；再加一层 `err_promote`（本地条目提升为公共条目）就能做知识沉淀流程。
 9. **Web GUI 面板** —— 被否掉那个选项的完整版：第三方包可以声明 `dsh.client`（`platform: 'web'`）+ 客户端模块，做列表视图、命中曲线和设置页。代价是要重建 Web 产物，建议 P6 跑稳后再评估。
 10. **反向利用** —— `err_list --status open` 就是一份现成的「这个项目当前还没解决的坑」，可以直接当 issue 草稿或新人上手文档。
+
+## 相关项目
+
+2026-09-30 调研了 GitHub 上 [`dsh-plugin`](https://github.com/topics/dsh-plugin) topic 下的项目，2026-10-01 复核。已有好几个插件在采集错误，但没有一个给错误分配跨会话稳定的编号，并在模型开始诊断**之前**把已记录的解法推回上下文。
+
+| 项目 | 做什么 | 区别 |
+| ---- | ------ | ---- |
+| [166767/dsh-error-audit](https://github.com/166767/dsh-error-audit) | 监听同样的三个钩子（`agent/error`、`agent/request-error`、`tools/result`），把每个错误写进 `$DSH_HOME/error-audit/`，通知模型，并提供 `read_error_logs` 工具 | 是日志而不是知识库：不去重，也不存解法 |
+| [d86e/dsh-doctor](https://github.com/d86e/dsh-doctor) | 采集失败的工具结果，分为 transient / agent / business 三类 | 只观察和分类，从不注入解法 |
+| [Wanbinyu/dsh-error-lens](https://github.com/Wanbinyu/dsh-error-lens) | 对 provider 错误（401、403、429、上下文溢出等）做脱敏后的诊断 | 只在会话内，不落盘。它的 README 明说基于文本规则的脱敏不可能完整 —— 本项目 §4.4 也受同样的限制 |
+| [Leitarkkk/dsh-research-nudge](https://github.com/Leitarkkk/dsh-research-nudge) | 用同一个注入点（`tools/post-execute` → `additionalContexts`），在失败、重复和工具调用累积到阈值后提醒模型去查资料 | 只在会话内；可能和 `err-kb` 的通知在同一步触发 |
+
+`dsh` 之外的相邻项目：
+
+- [vshulcz/deja-vu](https://github.com/vshulcz/deja-vu) —— 本地搜索历史 agent 会话，不调用 LLM。
+- [thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)、[MemTensor/MemOS](https://github.com/MemTensor/MemOS) —— 通用 agent 记忆；两者都要花模型调用（摘要或 embedding）来构建记忆。
+- [ankitkr3/compounded](https://github.com/ankitkr3/compounded) —— 学到的经验随干净的使用积累信任，带偏任务时降级。
+- [Sentry 事件分组](https://docs.sentry.io/concepts/data-management/event-grouping/) —— 错误指纹与分组的成熟先例。
+
+`dsh-errkb` 的定位：**稳定、人类可读的编号**（`E-0007`），跨会话、跨机器不变；**解法在诊断之前注入**，不超过 120 token；**Markdown 是唯一真源**，可手工编辑、由 git 合并；**零模型调用** —— 采集、匹配、注入全是本地文本处理。
 
 ## 参与与反馈
 
