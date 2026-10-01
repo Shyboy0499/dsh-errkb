@@ -1,6 +1,7 @@
 // dsh-errkb plugin entry. This file declares the plugin's surface and wires it:
 // apply() resolves the knowledge base, binds a recorder to it, and registers the
-// two capture listeners (T11) together with the four injection points (T13).
+// two capture listeners (T11) together with the four injection points (T13),
+// which also feed resolution detection (T14), and the five tools (T15).
 // The pipeline itself lives in src/plugin.ts; every registration point still
 // to come is marked with the task that owns it.
 import type { Context } from "@deepseek-ai/cordis";
@@ -8,6 +9,8 @@ import z from "@deepseek-ai/schemastery";
 import { defaultProbe, formatKbLog, resolveKbDir } from "./paths";
 import { INJECT_MODES, SESSION_DIGEST_MODES } from "./inject";
 import type { InjectMode, SessionDigestMode } from "./inject";
+import { CAPTURE_FIX_MODES } from "./resolve-detect";
+import type { CaptureFixMode } from "./resolve-detect";
 import {
   DEFAULT_INJECTION_OPTIONS,
   createInjection,
@@ -15,6 +18,7 @@ import {
   registerInjection,
 } from "./plugin";
 import type { InjectionOptions, RecorderOptions } from "./plugin";
+import { registerTools } from "./tools";
 
 // The plugin's runtime name, matching `id` in cordis.patch.yml. The installed
 // harness plugins follow the same rule: dsh-spill-policy exports "spill-policy",
@@ -29,12 +33,12 @@ export const inject = ["tools", "systemPrompt"];
 
 // Every default mirrors the Settings table in README.md item for item. T11
 // reads the capture and store settings (see recorderOptions), T13 reads
-// inject, sessionDigest and systemPromptHint (see injectionOptions);
-// captureFix, providers and exportDir are still only declared. inject and
-// sessionDigest stay strings so an existing profile with a typo still loads:
-// a value outside the documented set (inject: hit-only|always|off,
-// sessionDigest: off|counts|index) falls back to the default. captureFix
-// (prompt-once|off) is not validated yet.
+// inject, sessionDigest and systemPromptHint and T14 reads captureFix (see
+// injectionOptions); providers and exportDir are still only declared. inject,
+// captureFix and sessionDigest stay strings so an existing profile with a typo
+// still loads: a value outside the documented set (inject:
+// hit-only|always|off, captureFix: prompt-once|off, sessionDigest:
+// off|counts|index) falls back to the default.
 // `share` is read, and anything but "private" counts as "public", the safer
 // of the two. `labels` is the exception: it is new, so it starts out as the
 // union it documents (§17 Q2). The store reads both label sets whatever this
@@ -98,8 +102,8 @@ function oneOf<T extends string>(
  * The injection settings a configuration selects.
  *
  * @param config - the plugin's settings.
- * @returns the settings for createInjection(); an unknown `inject` or
- *   `sessionDigest` value takes its default.
+ * @returns the settings for createInjection(); an unknown `inject`,
+ *   `captureFix` or `sessionDigest` value takes its default.
  */
 export function injectionOptions(config: Config): InjectionOptions {
   return {
@@ -107,6 +111,11 @@ export function injectionOptions(config: Config): InjectionOptions {
       config.inject,
       INJECT_MODES,
       DEFAULT_INJECTION_OPTIONS.inject,
+    ),
+    captureFix: oneOf<CaptureFixMode>(
+      config.captureFix,
+      CAPTURE_FIX_MODES,
+      DEFAULT_INJECTION_OPTIONS.captureFix,
     ),
     sessionDigest: oneOf<SessionDigestMode>(
       config.sessionDigest,
@@ -118,7 +127,8 @@ export function injectionOptions(config: Config): InjectionOptions {
 }
 
 // One startup line with the resolved directory and its tier (T05), then the
-// two capture listeners (T11) and the four injection points (T13).
+// two capture listeners (T11), the four injection points (T13) and the five
+// tools (T15).
 export function apply(ctx: Context, config: Config) {
   const kb = resolveKbDir(config.kbDir, defaultProbe());
   ctx.logger.info(formatKbLog(kb));
@@ -132,6 +142,16 @@ export function apply(ctx: Context, config: Config) {
     options: injectionOptions(config),
   });
   registerInjection(ctx, injection, recorder);
+  registerTools(ctx, {
+    recorder,
+    injection,
+    kbDir: kb.dir,
+    options: {
+      idPrefix: config.idPrefix,
+      idWidth: config.idWidth,
+      fuzzyThreshold: config.fuzzyThreshold,
+    },
+  });
 
   // TODO(T16): register the agent/request-error listener here.
 }

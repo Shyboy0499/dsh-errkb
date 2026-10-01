@@ -61,6 +61,7 @@ import {
   CapTracker,
   FixTrust,
   Injector,
+  estimateTokens,
   SYSTEM_PROMPT_HINT,
   SYSTEM_PROMPT_SECTION,
   memoryTrustStore,
@@ -71,11 +72,14 @@ import type {
   CapLimits,
   InjectMode,
   Notice,
+  NoticeKind,
   NoticeSource,
   SessionDigestMode,
   TrustStore,
 } from "./inject";
 import { DEFAULT_MATCH_OPTIONS, indexEntries, match } from "./match";
+import { ResolutionTracker, callOutcome } from "./resolve-detect";
+import type { CaptureFixMode } from "./resolve-detect";
 import type { Hit, IndexedEntry, MatchOptions, MatchResult } from "./match";
 import type { KbFiles } from "./paths";
 import {
@@ -168,6 +172,26 @@ export type RecordOutcome =
 /** An outcome of a write that did not fail. */
 type Written = Exclude<RecordOutcome, { kind: "failed" }>;
 
+/** What one recordFix() led to. */
+export type FixOutcome =
+  /** The entry now carries the fix, redacted, and is `fixed`. */
+  | { kind: "fixed"; entry: Entry }
+  /** No entry has that ID. */
+  | { kind: "unknown" }
+  /** The lock stayed busy for the whole write budget: nothing written. */
+  | { kind: "timeout" }
+  /** The write failed; the failure was counted and maybe logged. */
+  | { kind: "failed" };
+
+/** What one write() led to. */
+export type WriteOutcome<T> =
+  /** The write ran; `value` is what it returned. */
+  | { kind: "done"; value: T }
+  /** The lock stayed busy for the whole write budget: nothing written. */
+  | { kind: "timeout" }
+  /** The write failed; the failure was counted and maybe logged. */
+  | { kind: "failed"; error: unknown };
+
 /** Running totals since the recorder was created. */
 export interface RecorderStats {
   appended: number;
@@ -216,6 +240,18 @@ export interface Recorder {
   lookup(input: CaptureInput): Promise<MatchResult | undefined>;
   /** The indexed entries, read like lookup(); undefined when the read failed. */
   entries(): Promise<IndexedEntry[] | undefined>;
+  /**
+   * Write a fix into an entry and mark it `fixed` (T14), for `err_record`
+   * (T15) to call. Off the turn and serialized with the other writes, under
+   * the same budget and retries; the store redacts the fix. Never rejects.
+   */
+  recordFix(id: string, fix: string): Promise<FixOutcome>;
+  /**
+   * Run any store operation on the same path as recordFix(): queued behind
+   * every earlier write, under the same budget and retries (T15's other
+   * writes: status and notes, a new entry, an archived one). Never rejects.
+   */
+  write<T>(task: (store: ErrorStore) => Promise<T>): Promise<WriteOutcome<T>>;
   /** Count a failure and log it, at most once a minute; never throws. */
   fail(error: unknown): void;
   /** Settles once every write queued so far has finished. */
@@ -242,10 +278,14 @@ function enqueue(key: string, task: () => Promise<void>): void {
   });
 }
 
-/** Queue `task` like enqueue() and settle with its result. */
+/**
+ * Queue `task` like enqueue() and settle with its result. A rejection of
+ * `task` settles the returned promise, so the chain itself never rejects and
+ * the tasks after it still run.
+ */
 function queued<T>(key: string, task: () => Promise<T>): Promise<T> {
-  return new Promise<T>((resolve) => {
-    enqueue(key, async () => resolve(await task()));
+  return new Promise<T>((resolve, reject) => {
+    enqueue(key, () => task().then(resolve, reject));
   });
 }
 
@@ -332,6 +372,9 @@ export function toolInput(
 
 // ---------------------------------------------------------------------------
 // The recorder
+
+/** What budgeted() returns when the write budget ran out. */
+const TIMEOUT = Symbol("timeout");
 
 /**
  * True for a failure a retry cannot fix: a document that does not parse stays
@@ -466,8 +509,14 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     return { kind: "appended", id };
   }
 
-  /** Write one classified error within the time budget, with retries. */
-  async function persist(classified: Classified): Promise<Written> {
+  /**
+   * Run one write within the time budget, with retries.
+   *
+   * @returns what `write` returned, or `TIMEOUT` when the budget ran out.
+   */
+  async function budgeted<T>(
+    write: (store: ErrorStore) => Promise<T>,
+  ): Promise<T | typeof TIMEOUT> {
     const deadline = now() + WRITE_TIMEOUT_MS;
     for (let attempt = 0; ; attempt++) {
       const store = createStore(
@@ -477,15 +526,21 @@ export function createRecorder(deps: RecorderDeps): Recorder {
         clock,
       );
       try {
-        return await once(store, classified);
+        return await write(store);
       } catch (error) {
         cache = undefined;
-        if (error instanceof LockTimeoutError) return { kind: "timeout" };
+        if (error instanceof LockTimeoutError) return TIMEOUT;
         if (final(error) || attempt >= WRITE_RETRIES) throw error;
         await clock.sleep(RETRY_DELAY_MS);
-        if (now() >= deadline) return { kind: "timeout" };
+        if (now() >= deadline) return TIMEOUT;
       }
     }
+  }
+
+  /** Write one classified error within the time budget, with retries. */
+  async function persist(classified: Classified): Promise<Written> {
+    const outcome = await budgeted((store) => once(store, classified));
+    return outcome === TIMEOUT ? { kind: "timeout" } : outcome;
   }
 
   function tally(outcome: Written): void {
@@ -534,6 +589,23 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     });
   }
 
+  function write<T>(
+    task: (store: ErrorStore) => Promise<T>,
+  ): Promise<WriteOutcome<T>> {
+    return queued(key, async (): Promise<WriteOutcome<T>> => {
+      try {
+        const value = await budgeted(task);
+        cache = undefined;
+        return value === TIMEOUT
+          ? { kind: "timeout" }
+          : { kind: "done", value };
+      } catch (error) {
+        fail(error);
+        return { kind: "failed", error };
+      }
+    });
+  }
+
   return {
     capture,
 
@@ -573,6 +645,19 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     },
 
     entries: read,
+
+    write,
+
+    async recordFix(id, fix) {
+      const outcome = await write((store) =>
+        store.update(id, { fix, status: "fixed" }),
+      );
+      if (outcome.kind !== "done") return { kind: outcome.kind };
+      return outcome.value === undefined
+        ? { kind: "unknown" }
+        : { kind: "fixed", entry: outcome.value };
+    },
+
     fail,
     idle: () => settled(key),
     outcomes,
@@ -641,6 +726,17 @@ export function createRecorder(deps: RecorderDeps): Recorder {
 // Fix trust is one FixTrust per plugin instance over an injectable TrustStore
 // (memory until state.json exists), scoped per session, so a recurrence is
 // counted only within the session and turn that injected the fix.
+//
+// Resolution detection (T14) rides `tools/result`. Each session keeps a
+// ResolutionTracker (src/resolve-detect.ts, where the rule and the window are
+// described), advanced by the same turn boundary as the caps. A failed call
+// is watched once its write names the entry; a successful one is checked
+// against the watches. Both are handled in arrival order on a per-session
+// chain, so a success is never checked before the failure in front of it has
+// been written. A resolved entry feeds FixTrust a success; one without a fix
+// queues the one-shot `captureFix` prompt for the next pre-step, through the
+// same pending list as a dead turn's notice. recordFix() on the recorder is
+// the write `err_record` (T15) calls.
 
 /** Pending pre-step notices kept per session; the oldest goes first. */
 export const MAX_PENDING = 4;
@@ -648,12 +744,14 @@ export const MAX_PENDING = 4;
 /** Injection settings; every one has a default. */
 export interface InjectionOptions {
   inject: InjectMode;
+  captureFix: CaptureFixMode;
   sessionDigest: SessionDigestMode;
   systemPromptHint: boolean;
 }
 
 export const DEFAULT_INJECTION_OPTIONS: InjectionOptions = {
   inject: "hit-only",
+  captureFix: "prompt-once",
   sessionDigest: "counts",
   systemPromptHint: true,
 };
@@ -686,7 +784,10 @@ export interface Injection {
   readonly trust: FixTrust;
   /** `agent/error`: record, and queue the notice for the next step. */
   agentError(payload: AgentErrorPayload): void;
-  /** `tools/result`: record, and route a miss's new ID to the next step. */
+  /**
+   * `tools/result`: record, route a miss's new ID to the next step, and feed
+   * resolution detection (T14).
+   */
   toolResult(
     exec: Readonly<ToolExecution>,
     result: Readonly<ToolExecutionResult>,
@@ -706,7 +807,30 @@ export interface Injection {
   sessionStart(payload: SessionStartPayload): Promise<void>;
   /** The system-prompt section, or undefined under `systemPromptHint: false`. */
   section(): PromptSection | undefined;
+  /**
+   * Notices delivered so far (T15's `err_stats`): one session's since it
+   * started, or every session's since the plugin started.
+   */
+  counts(session?: string): InjectionCounts;
 }
+
+/** Notices delivered, for `err_stats` (T15). */
+export interface InjectionCounts {
+  /** Every notice that reached the model. */
+  notices: number;
+  /** The notices that carried a recorded fix: `hit`, `near` or `doubted`. */
+  fixNotices: number;
+  /** Their bodies' size, by estimateTokens(). */
+  noticeTokens: number;
+}
+
+const emptyCounts = (): InjectionCounts => ({
+  notices: 0,
+  fixNotices: 0,
+  noticeTokens: 0,
+});
+
+const FIX_NOTICES: readonly NoticeKind[] = ["hit", "near", "doubted"];
 
 /** One notice waiting for the next step. */
 interface Pending {
@@ -718,12 +842,25 @@ interface Pending {
   /** The write settled; `id` is set when it appended an entry. */
   written: boolean;
   id?: string;
+  /** The fix prompt for this entry, which looks resolved (T14). */
+  ask?: string;
+  /** The resolver's turn the prompt was queued in; it lapses with the window. */
+  turn?: number;
 }
 
 interface SessionState {
   injector: Injector;
+  resolver: ResolutionTracker;
   turn: number | undefined;
   pending: Pending[];
+  /**
+   * Resolution events, handled one at a time in arrival order: a failure
+   * waits for its write to name the entry before a later success is checked
+   * against it. Never rejects.
+   */
+  resolving: Promise<void>;
+  /** What this session was told, for `err_stats` (T15). */
+  counts: InjectionCounts;
 }
 
 /** A user message carrying `text`, attributed to the plugin. */
@@ -755,6 +892,19 @@ export function createInjection(deps: InjectionDeps): Injection {
   // freezes it in place before `tools/result`; identity is kept).
   const awaitingId = new WeakMap<object, SessionState>();
   const injecting = o.inject !== "off";
+  const totals = emptyCounts();
+
+  /** The message for a notice about to reach the model, counted. */
+  function deliver(state: SessionState, notice: Notice): UserMessage {
+    const tokens = estimateTokens(notice.text);
+    const fix = FIX_NOTICES.includes(notice.kind) ? 1 : 0;
+    for (const counts of [state.counts, totals]) {
+      counts.notices++;
+      counts.fixNotices += fix;
+      counts.noticeTokens += tokens;
+    }
+    return pluginMessage(notice.text, notice.source);
+  }
 
   /** This session's state, kept among the most recently active ones. */
   function stateFor(session: string, fresh = false): SessionState {
@@ -765,14 +915,37 @@ export function createInjection(deps: InjectionDeps): Injection {
         trust,
         scope: session,
       }),
+      resolver: new ResolutionTracker(),
       turn: undefined,
       pending: [],
+      resolving: Promise.resolve(),
+      counts: emptyCounts(),
     };
     sessions.delete(session);
     sessions.set(session, state);
     if (sessions.size > MAX_SESSIONS)
       sessions.delete(sessions.keys().next().value as string);
     return state;
+  }
+
+  /**
+   * `start()`, with a handler attached before anything else can run: a throw
+   * or a rejection is counted and settles as undefined. Every promise the
+   * hooks start and do not await at once goes through here, so none is ever
+   * left to reject unhandled while `next()` runs (§13) - the Recorder
+   * contract says lookup() and the writes never reject, but a recorder that
+   * breaks it must not crash the host.
+   */
+  function guard<T>(start: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return start().catch((error: unknown) => {
+        recorder.fail(error);
+        return undefined;
+      });
+    } catch (error) {
+      recorder.fail(error);
+      return Promise.resolve(undefined);
+    }
   }
 
   /** Queue a notice for the next step; never rejects. */
@@ -782,23 +955,27 @@ export function createInjection(deps: InjectionDeps): Injection {
     write: PendingWrite | undefined,
   ): void {
     if (write !== undefined)
-      void write.then((outcome) => {
+      void guard(() => write).then((outcome) => {
         item.written = true;
-        if (outcome.kind === "appended") item.id = outcome.id;
+        if (outcome?.kind === "appended") item.id = outcome.id;
       });
     else item.written = true;
     state.pending.push(item);
     if (state.pending.length > MAX_PENDING) state.pending.shift();
   }
 
-  /** Look a tool outcome up and offer it; never rejects. */
+  /**
+   * Look a tool outcome up and offer it; never rejects. Reading the payload
+   * is inside the try: a malformed result (`isError` with no `error`) throws
+   * there, and this runs while `next()` is still pending.
+   */
   async function toolNotice(
     exec: Readonly<ToolExecution>,
     result: Readonly<ToolExecutionResult>,
     state: SessionState,
   ): Promise<Notice | undefined> {
-    const found = await recorder.lookup(toolInput(exec, result));
     try {
+      const found = await recorder.lookup(toolInput(exec, result));
       if (found === undefined) return undefined;
       if (found.matched)
         return state.injector.offer({ kind: "hit", hit: counted(found) });
@@ -808,6 +985,77 @@ export function createInjection(deps: InjectionDeps): Injection {
       recorder.fail(error);
       return undefined;
     }
+  }
+
+  /** Queue a resolution step behind the session's earlier ones. */
+  function resolving(state: SessionState, step: () => Promise<void>): void {
+    state.resolving = state.resolving.then(() => guard(step)).then(() => {});
+  }
+
+  /**
+   * Feed one tool outcome to resolution detection (T14). A failure is watched
+   * once its write names the entry; a success resolves what it matches. The
+   * turn is taken now, when the call happened.
+   */
+  function detect(
+    state: SessionState,
+    exec: Readonly<ToolExecution>,
+    result: Readonly<ToolExecutionResult>,
+    write: PendingWrite | undefined,
+  ): void {
+    const input = toolInput(exec, result);
+    const outcome = callOutcome({
+      toolName: exec.name,
+      isError: input.kind === "tool",
+      text: input.kind === "command" ? input.text : "",
+      ...(input.kind === "command" && input.command !== undefined
+        ? { command: input.command }
+        : {}),
+    });
+    const turn = state.resolver.turn;
+    if (!outcome.ok) {
+      if (write === undefined) return;
+      resolving(state, async () => {
+        const written = await write;
+        if (written.kind === "appended" || written.kind === "hit")
+          state.resolver.occurred(written.id, outcome.key, turn);
+      });
+      return;
+    }
+    resolving(state, async () => {
+      for (const id of state.resolver.succeeded(outcome.keys, turn))
+        await resolved(state, id, turn);
+    });
+  }
+
+  /**
+   * `id` looks resolved: its fix earned a success, and an entry without one
+   * gets the one-shot prompt on the next step, under `captureFix:
+   * 'prompt-once'`.
+   */
+  async function resolved(
+    state: SessionState,
+    id: string,
+    turn: number,
+  ): Promise<void> {
+    const index = await recorder.entries();
+    const found = index?.find((indexed) => indexed.entry.id === id);
+    if (found === undefined) return;
+    const { entry, excluded } = found;
+    trust.succeeded(id, entry.fix);
+    if (
+      !injecting ||
+      o.captureFix !== "prompt-once" ||
+      excluded !== undefined ||
+      entry.fix.trim() !== "" ||
+      !state.resolver.ask(id)
+    )
+      return;
+    track(
+      state,
+      { read: Promise.resolve(), miss: false, written: true, ask: id, turn },
+      undefined,
+    );
   }
 
   /** The first pending notice the caps allow; the rest are dropped. */
@@ -823,6 +1071,16 @@ export function createInjection(deps: InjectionDeps): Injection {
         kept.push(item);
       } else if (item.id !== undefined) {
         notice ??= state.injector.offer({ kind: "miss", id: item.id });
+      } else if (
+        item.ask !== undefined &&
+        state.resolver.open(item.turn as number)
+      ) {
+        // A prompt the caps refuse now waits for a later step, until the
+        // window it was asked in closes; then it is dropped unsaid.
+        const asked =
+          notice === undefined ? state.injector.ask(item.ask) : undefined;
+        if (asked !== undefined) notice = asked;
+        else kept.push(item);
       }
     }
     state.pending = state.pending.filter(
@@ -844,7 +1102,9 @@ export function createInjection(deps: InjectionDeps): Injection {
         }
         const state = stateFor(session);
         // Queued before the write, so the error cannot hit its own new entry.
-        const found = recorder.lookup({ kind: "agent", error: payload.error });
+        const found = guard(() =>
+          recorder.lookup({ kind: "agent", error: payload.error }),
+        );
         const write = recorder.agentError(payload);
         const item: Pending = {
           read: Promise.resolve(),
@@ -874,13 +1134,17 @@ export function createInjection(deps: InjectionDeps): Injection {
       try {
         const write = recorder.toolResult(exec, result);
         const state = awaitingId.get(exec);
-        if (state === undefined) return;
-        awaitingId.delete(exec);
-        track(
-          state,
-          { read: Promise.resolve(), miss: true, written: false },
-          write,
-        );
+        if (state !== undefined) {
+          awaitingId.delete(exec);
+          track(
+            state,
+            { read: Promise.resolve(), miss: true, written: false },
+            write,
+          );
+        }
+        const session = exec.agent?.id;
+        if (session !== undefined)
+          detect(stateFor(session), exec, result, write);
       } catch (error) {
         recorder.fail(error);
       }
@@ -888,15 +1152,20 @@ export function createInjection(deps: InjectionDeps): Injection {
 
     async postExecute(exec, result, next) {
       let pending: Promise<Notice | undefined> | undefined;
+      let state: SessionState | undefined;
       try {
         const session = exec.agent?.id;
-        if (injecting && session !== undefined)
-          pending = toolNotice(exec, result, stateFor(session));
+        if (injecting && session !== undefined) {
+          state = stateFor(session);
+          const current = state;
+          // Guarded as it is created, not when it is awaited after next().
+          pending = guard(() => toolNotice(exec, result, current));
+        }
       } catch (error) {
         recorder.fail(error);
       }
       const decision = await next();
-      if (pending === undefined) return decision;
+      if (pending === undefined || state === undefined) return decision;
       try {
         const notice = await pending;
         if (notice === undefined) return decision;
@@ -904,7 +1173,7 @@ export function createInjection(deps: InjectionDeps): Injection {
           ...decision,
           additionalContexts: [
             ...(decision.additionalContexts ?? []),
-            pluginMessage(notice.text, notice.source),
+            deliver(state, notice),
           ],
         };
       } catch (error) {
@@ -920,6 +1189,7 @@ export function createInjection(deps: InjectionDeps): Injection {
         if (state.turn !== payload.turn) {
           state.turn = payload.turn;
           state.injector.beginTurn();
+          state.resolver.beginTurn();
         }
         state.injector.beginStep();
       } catch (error) {
@@ -937,10 +1207,7 @@ export function createInjection(deps: InjectionDeps): Injection {
         if (notice === undefined) return decision;
         return {
           ...decision,
-          messages: [
-            ...decision.messages,
-            pluginMessage(notice.text, notice.source),
-          ],
+          messages: [...decision.messages, deliver(state, notice)],
         };
       } catch (error) {
         recorder.fail(error);
@@ -969,6 +1236,12 @@ export function createInjection(deps: InjectionDeps): Injection {
       } catch (error) {
         recorder.fail(error);
       }
+    },
+
+    counts(session) {
+      if (session === undefined) return { ...totals };
+      const state = sessions.get(session);
+      return state === undefined ? emptyCounts() : { ...state.counts };
     },
 
     section() {

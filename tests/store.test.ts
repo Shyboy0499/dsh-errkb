@@ -582,6 +582,61 @@ describe("store: archive", () => {
   });
 });
 
+describe("store: archive one entry (err_forget, T15)", () => {
+  it("moves the entry to the archive with the reason in its notes", async () => {
+    const { store, text } = memoryStore();
+    for (let n = 1; n <= 3; n++) await store.append(input(n));
+    const before = parseDocument(text(files.errors) as string);
+    const archived = await store.archive("E-0002", "  misjudged:\n a typo  ");
+    expect(archived).toMatchObject({
+      id: "E-0002",
+      notes: "Archived 2026-10-01 08:30: misjudged: a typo",
+    });
+    const after = parseDocument(text(files.errors) as string);
+    expect(after.blocks.map((b) => b.entry.id)).toEqual(["E-0001", "E-0003"]);
+    expect(after.blocks[0]?.source).toBe(before.blocks[0]?.source);
+    const archive = text(files.archive) as string;
+    expect(archive.startsWith(`${ARCHIVE_HEADER}\n## E-0002 · `)).toBe(true);
+    expect(parseDocument(archive).blocks[0]?.entry).toEqual(archived);
+    // An archived ID is never reused.
+    expect((await store.append(input(4))).id).toBe("E-0004");
+  });
+
+  it("appends to an existing archive and keeps earlier notes", async () => {
+    const { store, text } = memoryStore();
+    await store.append(input(1, { notes: "first note" }));
+    await store.append(input(2));
+    await store.archive("E-0002");
+    const first = text(files.archive) as string;
+    const archived = await store.archive("E-0001");
+    expect(archived?.notes).toBe("first note\nArchived 2026-10-01 08:30");
+    const archive = text(files.archive) as string;
+    expect(archive.startsWith(first)).toBe(true);
+    expect(parseDocument(archive).blocks.map((b) => b.entry.id)).toEqual([
+      "E-0002",
+      "E-0001",
+    ]);
+    expect((await store.read()).blocks).toEqual([]);
+  });
+
+  it("returns undefined for an unknown ID and writes nothing", async () => {
+    const { store, text } = memoryStore();
+    await store.append(input(1));
+    const before = text(files.errors);
+    expect(await store.archive("E-0099", "x")).toBeUndefined();
+    expect(text(files.errors)).toBe(before);
+    expect(text(files.archive)).toBeUndefined();
+  });
+
+  it("refuses a document that does not parse", async () => {
+    const { store, fs } = memoryStore();
+    await fs.writeFile(files.errors, "## E-0001 · broken\n");
+    await expect(store.archive("E-0001")).rejects.toBeInstanceOf(
+      StoreCorruptError,
+    );
+  });
+});
+
 describe("store: update", () => {
   it("changes fix, status, notes, trigger, lastSeen and hits of one entry only", async () => {
     const { store, text } = memoryStore();
