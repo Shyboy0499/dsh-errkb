@@ -481,6 +481,67 @@ describe("tools/post-execute: the T13 acceptance path", () => {
     expect(failures).toBe(1);
   });
 
+  it("a malformed result is counted, rejects nothing while next() runs, and passes the decision through", async () => {
+    const { fake, recorder } = wired();
+    const listener = fake.listeners.get("tools/post-execute")?.[0] as Listener;
+    const unhandled: unknown[] = [];
+    const spy = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", spy);
+    try {
+      // `isError` with no `error`: reading the payload throws.
+      const malformed = {
+        isError: true,
+        content: [],
+      } as unknown as Readonly<ToolExecutionResult>;
+      const downstream: PostToolDecision = { kind: "accept" };
+      // A slow next(): the lookup settles while it is still pending, and Node
+      // reports an unhandled rejection at the end of a macrotask, so the
+      // window is real.
+      const slow = () =>
+        new Promise<PostToolDecision>((resolve) => {
+          setTimeout(() => resolve(downstream), 20);
+        });
+      expect(await listener(exec("t"), malformed, slow)).toBe(downstream);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).toEqual([]);
+      expect(recorder.stats.failures).toBe(1);
+    } finally {
+      process.off("unhandledRejection", spy);
+    }
+  });
+
+  it("a lookup that rejects is counted, even when next() rejects first", async () => {
+    const real = createRecorder({
+      files: filesIn(dir),
+      logger: { warn: () => undefined },
+    });
+    let failures = 0;
+    const recorder: Recorder = {
+      ...real,
+      lookup: () => Promise.reject(new Error("lookup broke")),
+      fail: () => {
+        failures++;
+      },
+    };
+    const { fake } = wired({}, { recorder });
+    const listener = fake.listeners.get("tools/post-execute")?.[0] as Listener;
+    const unhandled: unknown[] = [];
+    const spy = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", spy);
+    try {
+      await expect(
+        listener(exec("t"), failed("x"), async () => {
+          throw new Error("downstream");
+        }),
+      ).rejects.toThrow("downstream");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).toEqual([]);
+      expect(failures).toBe(1);
+    } finally {
+      process.off("unhandledRejection", spy);
+    }
+  });
+
   it("a notice that cannot be merged leaves the downstream decision untouched", async () => {
     const { fake, recorder } = wired();
     await call(fake, exec("t"), failed("EPERM: rename", "EPERM"));
@@ -731,6 +792,47 @@ describe("agent/pre-step: a dead turn's notice rides the next step", () => {
     const { fake } = wired({}, { recorder });
     fake.emit("agent/error", { agent: a, error: new Error("x") });
     expect(failures).toBe(1);
+  });
+
+  it("an agent/error payload whose agent getter throws is counted", () => {
+    const { fake, recorder } = wired();
+    const hostile = {
+      error: new Error("x"),
+      get agent(): never {
+        throw new Error("getter");
+      },
+    };
+    fake.emit("agent/error", hostile);
+    expect(recorder.stats.failures).toBe(1);
+  });
+
+  it("a lookup or a write that rejects is counted and never left unhandled", async () => {
+    const real = createRecorder({
+      files: filesIn(dir),
+      logger: { warn: () => undefined },
+    });
+    let failures = 0;
+    const recorder: Recorder = {
+      ...real,
+      lookup: () => Promise.reject(new Error("lookup broke")),
+      agentError: () => Promise.reject(new Error("write broke")),
+      fail: () => {
+        failures++;
+      },
+    };
+    const { fake } = wired({ inject: "always" }, { recorder });
+    const unhandled: unknown[] = [];
+    const spy = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", spy);
+    try {
+      fake.emit("agent/error", { agent: a, error: new Error("x") });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).toEqual([]);
+      expect(failures).toBe(2);
+      expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", spy);
+    }
   });
 
   it("an observe that throws is counted, and the step still enters", async () => {

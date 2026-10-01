@@ -242,10 +242,14 @@ function enqueue(key: string, task: () => Promise<void>): void {
   });
 }
 
-/** Queue `task` like enqueue() and settle with its result. */
+/**
+ * Queue `task` like enqueue() and settle with its result. A rejection of
+ * `task` settles the returned promise, so the chain itself never rejects and
+ * the tasks after it still run.
+ */
 function queued<T>(key: string, task: () => Promise<T>): Promise<T> {
-  return new Promise<T>((resolve) => {
-    enqueue(key, async () => resolve(await task()));
+  return new Promise<T>((resolve, reject) => {
+    enqueue(key, () => task().then(resolve, reject));
   });
 }
 
@@ -775,6 +779,26 @@ export function createInjection(deps: InjectionDeps): Injection {
     return state;
   }
 
+  /**
+   * `start()`, with a handler attached before anything else can run: a throw
+   * or a rejection is counted and settles as undefined. Every promise the
+   * hooks start and do not await at once goes through here, so none is ever
+   * left to reject unhandled while `next()` runs (§13) - the Recorder
+   * contract says lookup() and the writes never reject, but a recorder that
+   * breaks it must not crash the host.
+   */
+  function guard<T>(start: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return start().catch((error: unknown) => {
+        recorder.fail(error);
+        return undefined;
+      });
+    } catch (error) {
+      recorder.fail(error);
+      return Promise.resolve(undefined);
+    }
+  }
+
   /** Queue a notice for the next step; never rejects. */
   function track(
     state: SessionState,
@@ -782,23 +806,27 @@ export function createInjection(deps: InjectionDeps): Injection {
     write: PendingWrite | undefined,
   ): void {
     if (write !== undefined)
-      void write.then((outcome) => {
+      void guard(() => write).then((outcome) => {
         item.written = true;
-        if (outcome.kind === "appended") item.id = outcome.id;
+        if (outcome?.kind === "appended") item.id = outcome.id;
       });
     else item.written = true;
     state.pending.push(item);
     if (state.pending.length > MAX_PENDING) state.pending.shift();
   }
 
-  /** Look a tool outcome up and offer it; never rejects. */
+  /**
+   * Look a tool outcome up and offer it; never rejects. Reading the payload
+   * is inside the try: a malformed result (`isError` with no `error`) throws
+   * there, and this runs while `next()` is still pending.
+   */
   async function toolNotice(
     exec: Readonly<ToolExecution>,
     result: Readonly<ToolExecutionResult>,
     state: SessionState,
   ): Promise<Notice | undefined> {
-    const found = await recorder.lookup(toolInput(exec, result));
     try {
+      const found = await recorder.lookup(toolInput(exec, result));
       if (found === undefined) return undefined;
       if (found.matched)
         return state.injector.offer({ kind: "hit", hit: counted(found) });
@@ -844,7 +872,9 @@ export function createInjection(deps: InjectionDeps): Injection {
         }
         const state = stateFor(session);
         // Queued before the write, so the error cannot hit its own new entry.
-        const found = recorder.lookup({ kind: "agent", error: payload.error });
+        const found = guard(() =>
+          recorder.lookup({ kind: "agent", error: payload.error }),
+        );
         const write = recorder.agentError(payload);
         const item: Pending = {
           read: Promise.resolve(),
@@ -890,8 +920,11 @@ export function createInjection(deps: InjectionDeps): Injection {
       let pending: Promise<Notice | undefined> | undefined;
       try {
         const session = exec.agent?.id;
-        if (injecting && session !== undefined)
-          pending = toolNotice(exec, result, stateFor(session));
+        if (injecting && session !== undefined) {
+          const state = stateFor(session);
+          // Guarded as it is created, not when it is awaited after next().
+          pending = guard(() => toolNotice(exec, result, state));
+        }
       } catch (error) {
         recorder.fail(error);
       }
