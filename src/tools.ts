@@ -797,12 +797,15 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
         if (isError(value)) return errorText("err_stats", value);
         const where =
           value.scope === "session" ? "this session" : "all sessions";
+        const net =
+          value.fixNotices * ASSUMED_DIAGNOSIS_TOKENS - value.noticeTokens;
+        const clamped = net < 0 ? ` = −${-net}, shown as 0` : "";
         return text(
           [
             `Knowledge base: ${value.kbDir}`,
             `Entries: ${value.entries} · hits: ${value.hits} · open without a fix: ${value.openWithoutFix}`,
             `Notices (${where}): ${value.notices}, ${value.fixNotices} with a fix, ${value.noticeTokens} tokens`,
-            `Estimated tokens saved: ${value.estimatedTokensSaved} (estimate: ${value.fixNotices} fix notices × ${ASSUMED_DIAGNOSIS_TOKENS} − ${value.noticeTokens} notice tokens)`,
+            `Estimated tokens saved: ${value.estimatedTokensSaved} (estimate: ${value.fixNotices} fix notices × ${ASSUMED_DIAGNOSIS_TOKENS} − ${value.noticeTokens} notice tokens${clamped})`,
             `Distrusted fixes, not injected: ${value.suppressed.length === 0 ? "none" : value.suppressed.join(", ")}`,
           ].join("\n"),
         );
@@ -854,7 +857,9 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
  * {@link ASSUMED_DIAGNOSIS_TOKENS} tokens, and every notice delivered costs
  * its own tokens. It leaves out the standing costs (the system-prompt section
  * on every request, the session digest), so it is an estimate, and labelled
- * one wherever it is shown.
+ * one wherever it is shown. It never goes below 0: notices delivered without
+ * a fix cost tokens, but a negative "saved" figure reads as nonsense, so the
+ * rendered line shows the unclamped arithmetic next to the 0.
  *
  * @param fixNotices - notices that carried a fix.
  * @param noticeTokens - the tokens of every notice delivered.
@@ -863,7 +868,7 @@ export function estimateSaved(
   fixNotices: number,
   noticeTokens: number,
 ): number {
-  return fixNotices * ASSUMED_DIAGNOSIS_TOKENS - noticeTokens;
+  return Math.max(0, fixNotices * ASSUMED_DIAGNOSIS_TOKENS - noticeTokens);
 }
 
 /**

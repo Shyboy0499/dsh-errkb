@@ -1056,7 +1056,28 @@ describe("err_stats", () => {
   it("the estimate is fix notices × the assumed diagnosis − notice tokens", () => {
     expect(estimateSaved(0, 0)).toBe(0);
     expect(estimateSaved(3, 150)).toBe(3 * ASSUMED_DIAGNOSIS_TOKENS - 150);
-    expect(estimateSaved(0, 40)).toBe(-40);
+  });
+
+  it("the estimate never goes below 0, and the line says it was clamped", async () => {
+    expect(estimateSaved(0, 40)).toBe(0);
+    expect(estimateSaved(1, ASSUMED_DIAGNOSIS_TOKENS + 5)).toBe(0);
+    await seed({});
+    const { recorder, injection } = wired();
+    const counts = () => ({ notices: 2, fixNotices: 0, noticeTokens: 60 });
+    const { tools } = wired({
+      recorder,
+      injection: { counts, trust: injection.trust },
+    });
+    const stats = await callTool(tools, "err_stats", {});
+    expect(stats.value).toMatchObject({
+      notices: 2,
+      fixNotices: 0,
+      noticeTokens: 60,
+      estimatedTokensSaved: 0,
+    });
+    expect(stats.text).toContain(
+      `Estimated tokens saved: 0 (estimate: 0 fix notices × ${ASSUMED_DIAGNOSIS_TOKENS} − 60 notice tokens = −60, shown as 0)`,
+    );
   });
 });
 
