@@ -14,9 +14,9 @@
 > six of the eight decisions in its §17 are still open (Q2 and Q4 are decided) —
 > and the work is broken into [eighteen tasks](#roadmap) across seven milestones.
 > **T01–T15 are done:** the package installs, builds, type checks, lints, formats
-> and tests (with the 99% coverage gate enforced), CI runs all five on every pull
-> request, and the pure local layer is complete: knowledge-base directory
-> resolution (T05), error normalization and fingerprinting (T06), mandatory
+> and tests (with the 99% coverage gate enforced), CI runs all five on every
+> push to `main` and every pull request, and the pure local layer is complete:
+> knowledge-base directory resolution (T05), error normalization and fingerprinting (T06), mandatory
 > redaction (T07), the `ERRORS.md` store (T08) and matching (T09). The capture
 > layer is wired: classification and the noise rule (T10), and the first two
 > hooks, `agent/error` and `tools/result` (T11). The injection layer speaks:
@@ -33,8 +33,8 @@
 > T15), which writes it into `ERRORS.md`. Still missing: LLM request-failure
 > capture (T16), and installation into a profile (T17) — nothing installs it
 > for you yet, so the tools only reach a model once you add the plugin to a
-> profile yourself. Everything marked "not implemented" below is still a
-> description of the intended path.
+> profile yourself. Anything below tied to T16–T18 is still a description of
+> the intended path.
 >
 > - Design document: [`docs/设计说明书.md`](docs/设计说明书.md) — 19 sections, Chinese
 > - What the plugin will do: [How it works](#how-it-works)
@@ -93,7 +93,7 @@
 | `src/inject.ts` — notice generation, hard caps and fix trust              | ✅ In place (T12), 100% statements and lines — wired to the four injection points (T13) |
 | `src/resolve-detect.ts` — resolution detection                            | ✅ In place (T14), 100% statements and lines — fed by `tools/result`; `recordFix()` is called by `err_record` (T15) |
 | `src/tools.ts` — the five agent tools                                     | ✅ In place (T15), 100% statements and lines — `err_lookup`, `err_record`, `err_list`, `err_forget`, `err_stats`, registered through `ctx.tools.register()` |
-| `tests/`                                                                  | ✅ 522 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 62 and `seeds` 5 (T08, T15), `match` 40 (T09), `capture` 67 (T10), `plugin` 39 (T11, T14), `inject` 68 (T12–T15), `injection` 65 (T13, T14), `resolve-detect` 19 (T14), `tools` 36 (T15) |
+| `tests/`                                                                  | ✅ 525 cases (one skipped off Windows): `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 62 and `seeds` 5 (T08, T15), `match` 40 (T09), `capture` 67 (T10), `plugin` 39 (T11, T14), `inject` 68 (T12–T15), `injection` 65 (T13, T14), `resolve-detect` 19 (T14), `tools` 39 (T15) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -132,7 +132,8 @@ For a failure you see once, that is fine. For a failure you see every week — a
 ## How it works
 
 ```
-1. CAPTURE      agent/request-error · agent/error · tools/result · non-zero exits
+1. CAPTURE      agent/error · tools/result · non-zero exits
+                (agent/request-error: not yet wired, T16)
                 observe only — never throws, never takes over retries
                                      │
                                      ▼
@@ -166,13 +167,13 @@ Not every failure deserves a number. Transient ones are counted and only promote
 
 | Source                               | Hook                                 | Captured as                                                    | Gets an ID?                                                                        |
 | ------------------------------------ | ------------------------------------ | -------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| LLM API failure                      | `agent/request-error` (waterfall)    | `code` + normalized message                                    | Permanent codes: `AUTH`, `QUOTA`, `INVALID_REQUEST`, `CONTEXT_OVERFLOW`, `NO_ADAPTER`, `UNKNOWN` → immediately |
+| LLM API failure                      | `agent/request-error` (waterfall)    | `code` + normalized message                                    | Permanent codes: `AUTH`, `QUOTA`, `INVALID_REQUEST`, `CONTEXT_OVERFLOW`, `NO_ADAPTER`, `UNKNOWN` → immediately — **not yet wired (T16)** |
 | Turn-level exception                 | `agent/error` (emit)                 | `error.message` / `code` / `name`                              | Immediately (safely stringified when `unknown`)                                     |
 | Tool failure                         | `tools/result` (emit)                | `exec.name` + `result.error.message` + `result.error.info.code` | Immediately (`result.isError`)                                                      |
 | Command exited non-zero              | `tools/result` content sniffing      | matches `\[exit code: (\d+)\]` with N ≠ 0                      | Immediately, unless `captureExitCodes` is off                                       |
-| Transient LLM failure                | `agent/request-error`                | `RATE_LIMIT`, `SERVER`, `TIMEOUT`, `TRANSPORT`, `EMPTY_RESPONSE` | ❌ counted only — promoted after `transientThreshold` (default 5) in one session    |
+| Transient LLM failure                | `agent/request-error`                | `RATE_LIMIT`, `SERVER`, `TIMEOUT`, `TRANSPORT`, `EMPTY_RESPONSE` | ❌ counted only — promoted after `transientThreshold` (default 5) in one session — **not yet wired (T16)** |
 
-The listener on `agent/request-error` must `await next()` and return the downstream result unchanged. It observes; it never recovers.
+When it lands (T16), the listener on `agent/request-error` must `await next()` and return the downstream result unchanged. It observes; it never recovers.
 
 **What is wired today (T11).** `src/plugin.ts` holds the listener bodies; `apply` registers two of them. `agent/error` hands its `error` to classification as a turn-level exception. `tools/result` records a failed result (`result.isError`) as a tool failure with `result.error.message` and `result.error.info?.code`; any other result has its text blocks sniffed for `[exit code: N]`, with the command taken from the call's `command`, `cmd` or `script` argument. Each classified error is matched against the entries already in `ERRORS.md`: a hit bumps that entry's hits and last-seen, a miss appends the next ID. A `count-only` error (a transient one below the threshold, or one after its promotion) only bumps an entry that already has its signature, and writes nothing otherwise. Transient counts are kept per session, by `Agent.id`; a payload with no agent counts under one plugin-wide counter. `agent/request-error` is not registered yet (T16), so no LLM failure reaches the pipeline.
 
@@ -341,7 +342,8 @@ The extension points below were verified against the local installation, not aga
 > **Nothing is published, and the plugin is not installed anywhere yet.** The
 > first two commands work as of T01–T04 — `pnpm install` and `pnpm build` both
 > exit 0 and produce `lib/index.js` — but adding the package to a profile is
-> untested until T17, and there is no behaviour to observe once it is there.
+> untested until T17. Once added, it records and injects as described in
+> [What works today](#what-works-today).
 
 ```sh
 cd <repo-root>
@@ -524,7 +526,7 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 | 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
 | 🔜    | T18 — optional: Obsidian export                                                         |
 
-T01–T15 are checked off. T01–T13 are merged upstream; T14 and T15 are not yet. The rest are open; T18 can be dropped at any point without touching the main line.
+T01–T15 are checked off and merged upstream (T14 and T15 in PR #12). The rest are open; T18 can be dropped at any point without touching the main line.
 
 ### Milestone mapping
 
@@ -573,7 +575,7 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 
 ## Development
 
-The skeleton exists (T01–T04), so all of these work. `build`, `typecheck`, `lint`, `test` and `format:check` are exactly what CI runs on every pull request:
+The skeleton exists (T01–T04), so all of these work. `build`, `typecheck`, `lint`, `test` and `format:check` are exactly what CI runs on every push to `main` and every pull request:
 
 ```sh
 pnpm install
@@ -679,12 +681,15 @@ Where `dsh-errkb` sits: **stable, human-readable IDs** (`E-0007`) that survive a
 
 ## Contributing
 
-There is no code to contribute yet — which makes this the cheapest moment to disagree with the design.
+T01–T15 are implemented and tested; T16 and T17 are open, and nothing is installed or published yet. Contributions are welcome — fixes, tests, a review of the design, or disagreement with it while the open §17 decisions are still cheap to change.
 
 - **The design document is the source of truth.** If this README and [`docs/设计说明书.md`](docs/设计说明书.md) disagree, the design document wins (and this README has a bug worth reporting).
 - **Feedback goes in the document.** §17 is a table with an empty "your answer" column; §19 is an annotation area. Both are meant to be written in directly.
 - **Keep the two READMEs in sync.** `README.md` is English and `README.zh-CN.md` is Chinese, and they have already drifted once. Any change to one belongs in the same change as the other.
 - **Language rules for the repository**: English for `README.md` and for code, comments, commits and documentation; Chinese for `README.zh-CN.md` and for the design document, which is written in Chinese by choice.
+- **`pnpm test` enforces the coverage gate.** It runs vitest with coverage and fails under 99% statements or lines; run it with `pnpm typecheck`, `pnpm lint`, `pnpm format:check` and `pnpm build` before you push — CI runs the same five.
+- **The privacy guard must pass.** `.github/workflows/privacy-guard.yml` rejects absolute user paths, personal e-mail addresses and credential-shaped tokens anywhere in the tree; write `<repo-root>` and other placeholders instead.
+- **One task per commit**, with a conventional prefix and the task tag: `feat: add the five err_ tools (T15)`, `fix: … (T15)`, `docs: …`.
 
 ## License
 

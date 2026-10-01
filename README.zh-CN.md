@@ -13,8 +13,8 @@
 > **状态：P5 已完成。** 设计文档已写完、正在审查中 —— 其中 §17 的 8 项里还有 6 项
 > 未拍板（第 2、4 问已定）—— 工作被拆成 **18 个 task**，归入 7 个里程碑。
 > **T01–T15 已完成：** 包装得上、构建得出、过得了类型检查与 lint、格式与测试也都
-> 跑得通（99% 覆盖率门槛已真正生效），CI 在每次 PR 上都会执行这五步；纯本地层
-> 已经齐全：知识库目录解析（T05）、报错规范化与指纹（T06）、强制脱敏（T07）、
+> 跑得通（99% 覆盖率门槛已真正生效），CI 在每次推送到 `main` 与每次 PR 上
+> 都会执行这五步；纯本地层已经齐全：知识库目录解析（T05）、报错规范化与指纹（T06）、强制脱敏（T07）、
 > `ERRORS.md` 存储（T08）与匹配（T09）。采集层已经接通：分类与噪声规则（T10），
 > 以及前两个钩子 `agent/error` 与 `tools/result`（T11）。注入层已经开口：通知
 > 文本、上限与解法信任（T12）已接到四个注入点上（T13），解决检测（T14）把闭环补上。
@@ -26,7 +26,7 @@
 > 信任；没有解法的条目会收到一次提示，请模型用 `err_record` 记下解法（T14、T15），
 > 由它写进 `ERRORS.md`。还缺：LLM 请求失败的采集（T16），以及安装进 profile（T17）
 > —— 目前还没有任何东西替你装上它，所以只有你自己把插件加进 profile 之后，模型才
-> 看得到这些工具。下面标着「尚未实现」的部分，依然只是目标路径的描述。
+> 看得到这些工具。下面凡是属于 T16–T18 的部分，依然只是目标路径的描述。
 >
 > - 设计文档：[`docs/设计说明书.md`](docs/设计说明书.md) —— 19 节
 > - 它将来会做什么：[它怎么工作](#它怎么工作)
@@ -85,7 +85,7 @@
 | `src/inject.ts` —— 通知生成、硬上限与解法信任                            | ✅ 就位（T12），语句与行覆盖 100% —— 已接到四个注入点（T13） |
 | `src/resolve-detect.ts` —— 解决检测                                      | ✅ 就位（T14），语句与行覆盖 100% —— 由 `tools/result` 驱动；`recordFix()` 由 `err_record`（T15）调用 |
 | `src/tools.ts` —— 五个工具                                               | ✅ 就位（T15），语句与行覆盖 100% —— `err_lookup`、`err_record`、`err_list`、`err_forget`、`err_stats`，经 `ctx.tools.register()` 注册 |
-| `tests/`                                                                 | ✅ 522 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 62 与 `seeds` 5（T08、T15）、`match` 40（T09）、`capture` 67（T10）、`plugin` 39（T11、T14）、`inject` 68（T12–T15）、`injection` 65（T13、T14）、`resolve-detect` 19（T14）、`tools` 36（T15） |
+| `tests/`                                                                 | ✅ 525 个用例（非 Windows 上跳过一个）：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 62 与 `seeds` 5（T08、T15）、`match` 40（T09）、`capture` 67（T10）、`plugin` 39（T11、T14）、`inject` 68（T12–T15）、`injection` 65（T13、T14）、`resolve-detect` 19（T14）、`tools` 39（T15） |
 | 装进 `web` profile                                                       | ⛔ 未开始       |
 | 发布到 npm                                                               | ⛔ 未开始 —— 还没有 task 覆盖它，见[开发路线图](#开发路线图) |
 
@@ -122,7 +122,8 @@
 ## 它怎么工作
 
 ```
-1. 采集         agent/request-error · agent/error · tools/result · 非零退出
+1. 采集         agent/error · tools/result · 非零退出
+                （agent/request-error：尚未接通，T16）
                 只观察 —— 永不抛错，永不接管重试
                                      │
                                      ▼
@@ -156,13 +157,13 @@
 
 | 来源                 | 钩子                              | 记成什么                                                        | 立即编号？                                                                        |
 | -------------------- | --------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| LLM API 失败         | `agent/request-error`（waterfall）| `code` + 规范化后的 message                                     | 永久性 code：`AUTH`、`QUOTA`、`INVALID_REQUEST`、`CONTEXT_OVERFLOW`、`NO_ADAPTER`、`UNKNOWN` → ✅ 立即 |
+| LLM API 失败         | `agent/request-error`（waterfall）| `code` + 规范化后的 message                                     | 永久性 code：`AUTH`、`QUOTA`、`INVALID_REQUEST`、`CONTEXT_OVERFLOW`、`NO_ADAPTER`、`UNKNOWN` → ✅ 立即 —— **尚未接通（T16）** |
 | 回合级异常           | `agent/error`（emit）             | `error.message` / `code` / `name`                               | ✅ 立即（`unknown` 时安全字符串化）                                                |
 | 工具失败             | `tools/result`（emit）            | `exec.name` + `result.error.message` + `result.error.info.code` | ✅ 立即（`result.isError`）                                                        |
 | 命令非零退出         | `tools/result` 内容嗅探           | 匹配 `\[exit code: (\d+)\]` 且 N ≠ 0                            | ✅ 立即，除非关掉 `captureExitCodes`                                               |
-| 瞬时 LLM 失败        | `agent/request-error`             | `RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`、`EMPTY_RESPONSE` | ❌ 只计数 —— 同一会话内累计到 `transientThreshold`（默认 5）才升级为条目           |
+| 瞬时 LLM 失败        | `agent/request-error`             | `RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`、`EMPTY_RESPONSE` | ❌ 只计数 —— 同一会话内累计到 `transientThreshold`（默认 5）才升级为条目 —— **尚未接通（T16）** |
 
-`agent/request-error` 上的监听器必须 `await next()` 并原样返回下游结果。它只观察，永不接管恢复。
+等它落地（T16），`agent/request-error` 上的监听器必须 `await next()` 并原样返回下游结果。它只观察，永不接管恢复。
 
 **今天接通了什么（T11）。** 监听器的处理体在 `src/plugin.ts`，`apply` 注册其中两个。`agent/error` 把它的 `error` 作为回合级异常交给分类。`tools/result` 把失败结果（`result.isError`）记为工具失败，带上 `result.error.message` 与 `result.error.info?.code`；其余结果则从文本块里嗅探 `[exit code: N]`，命令取自调用参数里的 `command`、`cmd` 或 `script`。每条分好类的报错先与 `ERRORS.md` 里已有的条目匹配：命中则给该条目的命中数与最近时间加一，未命中则追加下一个编号。`count-only` 的报错（未达阈值的瞬时错误，或已升级之后的重复）只给已有同指纹的条目加计数，否则什么也不写。瞬时计数按会话（`Agent.id`）分开；没有 agent 的载荷共用一个插件级计数器。`agent/request-error` 还没注册（T16），所以没有任何 LLM 失败会进入流水线。
 
@@ -330,7 +331,7 @@ re-diagnosing or researching.
 
 > **什么都没发布，插件也还没装进任何地方。** 前两条命令从 T01–T04 起可用 ——
 > `pnpm install` 与 `pnpm build` 都退出 0 并产出 `lib/index.js` —— 但把包加进
-> profile 要到 T17 才验证，而且装进去也没有行为可观察。
+> profile 要到 T17 才验证。加进去之后，它会按[目前完成到哪一步](#目前完成到哪一步)所述记录与注入。
 
 ```sh
 cd <repo-root>
@@ -512,7 +513,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | 🔜   | T16–T17 —— LLM 失败接入，以及安装进 web profile                      |
 | 🔜   | T18 —— 可选：Obsidian 导出                                           |
 
-T01–T15 已勾选；T01–T13 已合并到上游，T14 与 T15 尚未合并。其余仍开放；T18 随时可以砍掉，不影响主线。
+T01–T15 已勾选，并已全部合并到上游（T14 与 T15 随 PR #12 合并）。其余仍开放；T18 随时可以砍掉，不影响主线。
 
 ### 阶段对照
 
@@ -561,7 +562,7 @@ T01–T15 已勾选；T01–T13 已合并到上游，T14 与 T15 尚未合并。
 
 ## 开发
 
-骨架已就位（T01–T04），下面这些命令都能跑。`build`、`typecheck`、`lint`、`test`、`format:check` 正是 CI 在每次 PR 上执行的五步：
+骨架已就位（T01–T04），下面这些命令都能跑。`build`、`typecheck`、`lint`、`test`、`format:check` 正是 CI 在每次推送到 `main` 与每次 PR 上执行的五步：
 
 ```sh
 pnpm install
@@ -667,12 +668,15 @@ pnpm format:check     # prettier --check .（CI 跑的就是这条）
 
 ## 参与与反馈
 
-现在没有代码可贡献 —— 这反而是对设计提异议最便宜的时刻。
+T01–T15 已实现并有测试；T16 与 T17 仍开放，插件还没装进任何地方，也没有发布。欢迎贡献 —— 修 bug、补测试、审设计，或者趁 §17 未定的事项改起来还便宜时对设计提异议。
 
 - **设计文档是唯一真源。** 如果本 README 和 [`docs/设计说明书.md`](docs/设计说明书.md) 冲突，以设计文档为准（并且本 README 有 bug 值得报）。
 - **意见写进文档。** §17 是一张留了空「你的回答」列的表，§19 是一块批注区，都是给人直接写进去的。
 - **两份 README 必须同步。** `README.md` 是英文，`README.zh-CN.md` 是中文，而它们已经漂移过一次。改其中一份，就要在同一次改动里改另一份。
 - **仓库的语言约定**：`README.md` 以及代码、注释、提交信息、文档用英文；`README.zh-CN.md` 与设计文档用中文（设计文档用中文是刻意的选择）。
+- **`pnpm test` 执行覆盖率门槛。** 它带覆盖率跑 vitest，语句或行低于 99% 即失败；推送前连同 `pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm build` 一起跑 —— CI 跑的就是这五步。
+- **隐私检查必须通过。** `.github/workflows/privacy-guard.yml` 会拒绝整个仓库里出现的用户绝对路径、个人邮箱与形似凭据的字符串；请改用 `<repo-root>` 之类的占位符。
+- **一个 task 一个提交**，用约定式前缀并带上 task 标签：`feat: add the five err_ tools (T15)`、`fix: … (T15)`、`docs: …`。
 
 ## 许可证
 
