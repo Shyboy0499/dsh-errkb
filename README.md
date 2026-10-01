@@ -13,11 +13,12 @@
 > **Status: P2 complete.** The design document is written and under review —
 > six of the eight decisions in its §17 are still open (Q2 and Q4 are decided) —
 > and the work is broken into [eighteen tasks](#roadmap) across seven milestones.
-> **T01–T09 are done:** the package installs, builds, type checks, lints, formats
+> **T01–T10 are done:** the package installs, builds, type checks, lints, formats
 > and tests, CI runs all five on every pull request, and the pure local layer is
 > complete: knowledge-base directory resolution (T05), error normalization and
 > fingerprinting (T06), mandatory redaction (T07), the `ERRORS.md` store (T08)
-> and matching (T09). The capture layer (T10–T11) is next.
+> and matching (T09). The capture layer has started: classification and the
+> noise rule (T10) are in place; wiring the first two hooks (T11) is next.
 >
 > **The plugin still does nothing.** `apply` writes one startup line and calls
 > none of those modules, and it is not installed into any profile yet (that is
@@ -76,11 +77,11 @@
 | `seeds/ERRORS.seed.md` — three curated, redacted seed entries             | ✅ In place (T08) — not copied into any knowledge base yet |
 | `src/match.ts` — exact, fuzzy and fallback matching                       | ✅ In place (T09), 100% statements and lines — not called by anything yet |
 | `src/state.ts` — `state.json`, `.machine.json`, environment fingerprint   | ⛔ Not started             |
-| `src/capture.ts` — hook payloads and the noise rule                       | ⛔ Not started             |
+| `src/capture.ts` — classification, headline extraction and the noise rule | ✅ In place (T10), 100% statements and lines — not called by anything yet |
 | `src/inject.ts` — notice generation and hard caps                         | ⛔ Not started             |
 | `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
 | `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
-| `tests/`                                                                  | ✅ 224 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 58 and `seeds` 5 (T08), `match` 40 (T09) |
+| `tests/`                                                                  | ✅ 286 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 58 and `seeds` 5 (T08), `match` 40 (T09), `capture` 62 (T10) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -155,6 +156,16 @@ Not every failure deserves a number. Transient ones are counted and only promote
 | Transient LLM failure                | `agent/request-error`                | `RATE_LIMIT`, `SERVER`, `TIMEOUT`, `TRANSPORT`, `EMPTY_RESPONSE` | ❌ counted only — promoted after `transientThreshold` (default 5) in one session    |
 
 The listener on `agent/request-error` must `await next()` and return the downstream result unchanged. It observes; it never recovers.
+
+**Promotion happens once.** A transient error's count is kept per session and per signature, and it takes an ID on the occurrence that *reaches* `transientThreshold` — not on every occurrence after it. With a source left out of `capture`, nothing is produced for it at all, not even a count.
+
+**One line decides the signature (decided, [`docs/discussions.md`](docs/discussions.md) §2a).** Multi-line output — `tsc` with forty errors, a `pnpm install` log, a Python traceback — is reduced to one headline before fingerprinting, so a forty-first error or a reordered log keeps the same ID. `src/capture.ts` picks:
+
+1. for a Python traceback (`Traceback (most recent call last):`), the last non-empty line — checked first, because a traceback quotes source lines such as `raise ValueError(...)`;
+2. otherwise the first line matching `ERR_[A-Z0-9_]+|E[A-Z]{2,}|[A-Z]\w*Error|error TS\d+` (log-level words such as `ERR` and `ERROR` do not count);
+3. otherwise the last non-empty line.
+
+The headline is capped at 200 characters, the code it names (`ERR_PNPM_…`, `EPERM`, `TS2307`, `ModuleNotFoundError`) becomes the entry's `code` when the source gives none, and the full text is kept as the raw sample. For a command, the harness's own `[exit code: N]` marker is left out of the headline.
 
 ## Where the knowledge base lives
 
@@ -453,13 +464,14 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 | State | Tasks                                                                                   |
 | ----- | --------------------------------------------------------------------------------------- |
 | ✅    | T01–T09 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), paths, signature, redact, store and match |
-| 🔜    | T10–T11 — the capture layer: classification, and the first two hooks                    |
+| ✅    | T10 — classification, headline extraction and the transient-noise rule                  |
+| 🔜    | T11 — the first two hooks: `agent/error` and `tools/result`                             |
 | 🔜    | T12–T14 — the injection layer: notice text, four injection points, resolution detection |
 | 🔜    | T15 — the five agent tools                                                              |
 | 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
 | 🔜    | T18 — optional: Obsidian export                                                         |
 
-T01–T09 are checked off. T01–T05 are merged; T06–T09 are in review. The rest are open; T18 can be dropped at any point without touching the main line.
+T01–T10 are checked off. T01–T05 are merged upstream; T06–T10 are not yet. The rest are open; T18 can be dropped at any point without touching the main line.
 
 ### Milestone mapping
 
@@ -470,7 +482,7 @@ The design document plans in phases P0–P7 (§15); the task list numbers the sa
 | P0             | —       | The design document is written and **you have answered §17** — two of eight answered (Q2, Q4) |
 | P1             | T01–T04 | ✅ `pnpm typecheck` passes — verified locally and in CI                       |
 | P2             | T05–T09 | ✅ Unit tests green; every T05–T09 module at 100% statements and lines (the global gate also counts `src/index.ts`, which T11 wires up) |
-| P3             | T10–T11 | A guaranteed-failing command produces `E-0001`                               |
+| P3             | T10–T11 | A guaranteed-failing command produces `E-0001` — T10 done (100% statements and lines), T11 open |
 | P4             | T12–T14 | A repeated failure is injected and the model stops re-diagnosing              |
 | P5             | T15     | The model can call `err_lookup` and `err_record`                             |
 | P6             | T16–T17 | `--dump-config` shows the entry; one cloud and one local error are each recorded |
@@ -496,7 +508,7 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 | ☑ T07 | Redact                                 | `src/redact.ts`                                                              | Zero hits in the output, asserted                                                                    |
 | ☑ T08 | Store the document                     | `src/store.ts` — parse, render, append, archive, lock, atomic write          | Round-trip identity; hand-edited fixes read back; 50 concurrent records yield 50 unique IDs          |
 | ☑ T09 | Match                                  | `src/match.ts` — exact, fuzzy, code fallback, mis-flag fallback              | Boundary values 0.71 / 0.72 / 0.73 behave as specified                                               |
-| ☐ T10 | Classify, and suppress noise           | `src/capture.ts`                                                             | Transient errors get no ID until the threshold; capture off writes nothing                           |
+| ☑ T10 | Classify, and suppress noise           | `src/capture.ts`                                                             | Transient errors get no ID until the threshold; capture off writes nothing                           |
 | ☐ T11 | Wire the first two hooks               | `agent/error`, `tools/result` listeners                                      | A guaranteed-failing command produces `E-0001`                                                       |
 | ☐ T12 | Generate notices                       | `src/inject.ts` — template, caps, dedup                                      | Caps hold; source shape and summary length are exact                                                 |
 | ☐ T13 | Wire the four injection points         | `tools/post-execute`, `agent/pre-step`, `agent/session-start`, system prompt | A repeated failure is injected, and the model stops re-diagnosing                                    |

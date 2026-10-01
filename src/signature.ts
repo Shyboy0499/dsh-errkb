@@ -30,8 +30,10 @@ export const SIGNATURE_LENGTH = 12;
 // CSI sequences (colours, cursor movement) and OSC sequences (hyperlinks, window
 // titles), which is what terminals and test runners actually emit. Matching the
 // ESC and BEL control characters is the whole point of this expression.
-// oxlint-disable-next-line no-control-regex
-const ANSI = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+// Exported so capture strips the same sequences before picking a headline.
+export const ANSI =
+  // oxlint-disable-next-line no-control-regex
+  /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
 // One path segment: anything a message does not use to delimit a path. A
 // placeholder written by an earlier step counts as a segment character too, so

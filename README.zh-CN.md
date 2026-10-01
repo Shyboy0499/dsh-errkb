@@ -12,10 +12,11 @@
 
 > **状态：P2 已完成。** 设计文档已写完、正在审查中 —— 其中 §17 的 8 项里还有 6 项
 > 未拍板（第 2、4 问已定）—— 工作被拆成 **18 个 task**，归入 7 个里程碑。
-> **T01–T09 已完成：** 包装得上、构建得出、过得了类型检查与 lint、格式与测试也都
+> **T01–T10 已完成：** 包装得上、构建得出、过得了类型检查与 lint、格式与测试也都
 > 跑得通，CI 在每次 PR 上都会执行这五步；纯本地层已经齐全：知识库目录解析
 > （T05）、报错规范化与指纹（T06）、强制脱敏（T07）、`ERRORS.md` 存储（T08）
-> 与匹配（T09）。下一步是采集层（T10–T11）。
+> 与匹配（T09）。采集层已经开工：分类与噪声规则（T10）已就位，下一步是接上前两个
+> 钩子（T11）。
 >
 > **插件本身仍然什么都不做。** `apply` 只打一行启动日志、不调用上面任何模块，也还没装进任何 profile
 > （那是 T17），所以现在没有任何可用行为。下面标着「尚未实现」的部分，依然只是
@@ -73,11 +74,11 @@
 | `seeds/ERRORS.seed.md` —— 三条精选、已脱敏的种子条目                      | ✅ 就位（T08）—— 尚未被复制进任何知识库 |
 | `src/match.ts` —— 精确、模糊与兜底匹配                                   | ✅ 就位（T09），语句与行覆盖 100% —— 尚无调用方 |
 | `src/state.ts` —— `state.json`、`.machine.json`、环境指纹                | ⛔ 未开始       |
-| `src/capture.ts` —— 钩子载荷与噪声规则                                   | ⛔ 未开始       |
+| `src/capture.ts` —— 分类、标题行提取与噪声规则                           | ✅ 就位（T10），语句与行覆盖 100% —— 尚无调用方 |
 | `src/inject.ts` —— 通知生成与硬上限                                      | ⛔ 未开始       |
 | `src/resolve-detect.ts` —— 解决检测                                      | ⛔ 未开始       |
 | `src/tools.ts` —— 五个工具                                               | ⛔ 未开始       |
-| `tests/`                                                                 | ✅ 224 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 58 与 `seeds` 5（T08）、`match` 40（T09） |
+| `tests/`                                                                 | ✅ 286 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 58 与 `seeds` 5（T08）、`match` 40（T09）、`capture` 62（T10） |
 | 装进 `web` profile                                                       | ⛔ 未开始       |
 | 发布到 npm                                                               | ⛔ 未开始 —— 还没有 task 覆盖它，见[开发路线图](#开发路线图) |
 
@@ -151,6 +152,16 @@
 | 瞬时 LLM 失败        | `agent/request-error`             | `RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`、`EMPTY_RESPONSE` | ❌ 只计数 —— 同一会话内累计到 `transientThreshold`（默认 5）才升级为条目           |
 
 `agent/request-error` 上的监听器必须 `await next()` 并原样返回下游结果。它只观察，永不接管恢复。
+
+**只升级一次。** 瞬时错误按会话、按指纹计数，在计数**达到** `transientThreshold` 的那一次拿到编号 —— 之后不会每次都再升级。`capture` 里没列出的来源什么都不产出，连计数都没有。
+
+**签名只看一行（已定，[`docs/discussions.md`](docs/discussions.md) §2a）。** 多行输出 —— 带四十个错误的 `tsc`、一段 `pnpm install` 日志、一个 Python traceback —— 在算指纹前先压成一行标题，所以多出第四十一个错误、或日志顺序变了，编号都不变。`src/capture.ts` 的取法：
+
+1. Python traceback（含 `Traceback (most recent call last):`）取最后一个非空行 —— 这条最先判断，因为 traceback 会引用 `raise ValueError(...)` 这样的源码行；
+2. 否则取第一个匹配 `ERR_[A-Z0-9_]+|E[A-Z]{2,}|[A-Z]\w*Error|error TS\d+` 的行（`ERR`、`ERROR` 这类日志级别词不算）；
+3. 否则取最后一个非空行。
+
+标题行最长 200 字符；来源没给 code 时，标题行里的 code（`ERR_PNPM_…`、`EPERM`、`TS2307`、`ModuleNotFoundError`）记为条目的 `code`；完整文本留作原始样本。对命令而言，harness 自己追加的 `[exit code: N]` 标记不参与选标题行。
 
 ## 知识库落在哪里
 
@@ -448,13 +459,14 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | 状态 | Tasks                                                                |
 | ---- | -------------------------------------------------------------------- |
 | ✅   | T01–T09 —— 工程骨架（package、tsconfig、tsdown、vitest、bundle patch）、paths、signature、redact、store 与 match |
-| 🔜   | T10–T11 —— 采集层：分类，以及前两个钩子                              |
+| ✅   | T10 —— 分类、标题行提取与瞬时噪声规则                                |
+| 🔜   | T11 —— 前两个钩子：`agent/error` 与 `tools/result`                   |
 | 🔜   | T12–T14 —— 注入层：通知文本、四个注入点、解决检测                    |
 | 🔜   | T15 —— 五个工具                                                      |
 | 🔜   | T16–T17 —— LLM 失败接入，以及安装进 web profile                      |
 | 🔜   | T18 —— 可选：Obsidian 导出                                           |
 
-T01–T09 已勾选；T01–T05 已合并，T06–T09 在审查中。其余仍开放；T18 随时可以砍掉，不影响主线。
+T01–T10 已勾选；T01–T05 已合并到上游，T06–T10 尚未合并。其余仍开放；T18 随时可以砍掉，不影响主线。
 
 ### 阶段对照
 
@@ -465,7 +477,7 @@ T01–T09 已勾选；T01–T05 已合并，T06–T09 在审查中。其余仍�
 | P0           | ——      | 设计文档已写完，且**你已补齐 §17** —— 8 问已答 2 问（第 2、4 问）   |
 | P1           | T01–T04 | ✅ `pnpm typecheck` 通过 —— 本地与 CI 均已验证                       |
 | P2           | T05–T09 | ✅ 单测全绿；T05–T09 各模块语句与行覆盖 100%（全局门槛还统计 `src/index.ts`，由 T11 接上） |
-| P3           | T10–T11 | 一条必然失败的命令产出 `E-0001`                                       |
+| P3           | T10–T11 | 一条必然失败的命令产出 `E-0001` —— T10 已完成（语句与行覆盖 100%），T11 未开始 |
 | P4           | T12–T14 | 重复的失败被自动注入，模型不再重新诊断                                |
 | P5           | T15     | 模型可调 `err_lookup` 与 `err_record`                                 |
 | P6           | T16–T17 | `--dump-config` 可见该条目；云端与本地报错各记一条                    |
@@ -491,7 +503,7 @@ T01–T09 已勾选；T01–T05 已合并，T06–T09 在审查中。其余仍�
 | ☑ T07 | 脱敏                       | `src/redact.ts`                                                              | 断言输出中 0 命中                                                  |
 | ☑ T08 | 文档存储                   | `src/store.ts` —— 解析、渲染、追加、归档、锁、原子写                         | 写读往返一致；手改的解法能读回；并发 50 次记录产出 50 个唯一编号   |
 | ☑ T09 | 匹配                       | `src/match.ts` —— 精确、模糊、code 兜底、误判兜底                            | 边界值 0.71 / 0.72 / 0.73 符合规格                                 |
-| ☐ T10 | 分类与噪声抑制             | `src/capture.ts`                                                             | 瞬时错误达阈值前不编号；关闭采集则零写入                           |
+| ☑ T10 | 分类与噪声抑制             | `src/capture.ts`                                                             | 瞬时错误达阈值前不编号；关闭采集则零写入                           |
 | ☐ T11 | 接前两个钩子               | `agent/error`、`tools/result` 监听器                                         | 一条必然失败的命令产出 `E-0001`                                    |
 | ☐ T12 | 生成通知                   | `src/inject.ts` —— 模板、上限、去重                                          | 上限成立；source 形状与 summary 长度精确                           |
 | ☐ T13 | 接四个注入点               | `tools/post-execute`、`agent/pre-step`、`agent/session-start`、system prompt | 重复的失败被自动注入，模型不再重新诊断                             |
