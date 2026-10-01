@@ -15,5 +15,10 @@ README.md
 README.zh-CN.md
 docs/
 
+# Written byte-for-byte by src/store.ts, and tests/seeds.test.ts fails if a
+# formatter changes a character. errors/ is the runtime knowledge base.
+seeds/
+errors/
+
 # Local working notes. They are not part of the published package.
 dsh-errkb/

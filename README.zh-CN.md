@@ -1,6 +1,6 @@
 # dsh-errkb · 报错回收再利用
 
-![状态](https://img.shields.io/badge/status-P2%20in%20progress-yellow)
+![状态](https://img.shields.io/badge/status-P2%20complete-yellow)
 ![许可证](https://img.shields.io/github/license/jingchangzhao-gif/dsh-errkb)
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
@@ -10,19 +10,22 @@
 
 `dsh-errkb` 是一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）插件。它把模型遇到的报错变成一份带编号、人可编辑的知识库 —— 然后在模型**开始诊断之前**，把已记录的解法塞回上下文。
 
-> **状态：P2 进行中。** 设计文档已写完、正在审查中 —— 其中 §17 还有 8 项未拍板
-> —— 工作被拆成 **18 个 task**，归入 7 个里程碑。**T01–T05 已完成：** 包装得上、
-> 构建得出、过得了类型检查与 lint、格式与测试也都跑得通，CI 在每次 PR 上都会执行
-> 这五步；T05 的知识库目录解析作为纯本地层的第一个模块落地。
+> **状态：P2 已完成。** 设计文档已写完、正在审查中 —— 其中 §17 的 8 项里还有 6 项
+> 未拍板（第 2、4 问已定）—— 工作被拆成 **18 个 task**，归入 7 个里程碑。
+> **T01–T10 已完成：** 包装得上、构建得出、过得了类型检查与 lint、格式与测试也都
+> 跑得通，CI 在每次 PR 上都会执行这五步；纯本地层已经齐全：知识库目录解析
+> （T05）、报错规范化与指纹（T06）、强制脱敏（T07）、`ERRORS.md` 存储（T08）
+> 与匹配（T09）。采集层已经开工：分类与噪声规则（T10）已就位，下一步是接上前两个
+> 钩子（T11）。
 >
-> **插件本身仍然什么都不做。** `apply` 只打一行启动日志，也还没装进任何 profile
+> **插件本身仍然什么都不做。** `apply` 只打一行启动日志、不调用上面任何模块，也还没装进任何 profile
 > （那是 T17），所以现在没有任何可用行为。下面标着「尚未实现」的部分，依然只是
 > 目标路径的描述。
 >
 > - 设计文档：[`docs/设计说明书.md`](docs/设计说明书.md) —— 19 节
 > - 它将来会做什么：[它怎么工作](#它怎么工作)
 > - 你的数据将落在哪里：[知识库落在哪里](#知识库落在哪里)
-> - 卡住 T06–T08 的是：[待拍板的事项](#待拍板的事项) —— §17 仍未补齐
+> - 还开放的问题：[待拍板的事项](#待拍板的事项) —— §17 第 2、4 问已定，其余 6 问待定
 
 ## 目录
 
@@ -65,16 +68,17 @@
 | `cordis.patch.yml` —— bundle patch                                       | ✅ 就位（T04）    |
 | `src/index.ts` —— 插件入口（`name`、`inject`、`Config`、`apply`）        | ✅ 就位（T04），仅入口、无行为 |
 | `src/paths.ts` —— 库目录解析                                             | ✅ 就位（T05），覆盖 100% |
-| `src/signature.ts` —— 规范化与指纹                                       | ⛔ 未开始       |
-| `src/redact.ts` —— 强制脱敏                                              | ⛔ 未开始       |
-| `src/store.ts` —— 解析、渲染、追加、归档                                 | ⛔ 未开始       |
-| `src/match.ts` —— 精确、模糊与兜底匹配                                   | ⛔ 未开始       |
+| `src/signature.ts` —— 规范化与指纹                                       | ✅ 就位（T06），覆盖 100% —— 尚无调用方 |
+| `src/redact.ts`、`src/redact-patterns.ts` —— 强制脱敏                    | ✅ 就位（T07），覆盖 100% —— 尚无调用方 |
+| `src/store.ts` —— 解析、渲染、追加、归档                                 | ✅ 就位（T08），语句与行覆盖 100% —— 尚无调用方 |
+| `seeds/ERRORS.seed.md` —— 三条精选、已脱敏的种子条目                      | ✅ 就位（T08）—— 尚未被复制进任何知识库 |
+| `src/match.ts` —— 精确、模糊与兜底匹配                                   | ✅ 就位（T09），语句与行覆盖 100% —— 尚无调用方 |
 | `src/state.ts` —— `state.json`、`.machine.json`、环境指纹                | ⛔ 未开始       |
-| `src/capture.ts` —— 钩子载荷与噪声规则                                   | ⛔ 未开始       |
+| `src/capture.ts` —— 分类、标题行提取与噪声规则                           | ✅ 就位（T10），语句与行覆盖 100% —— 尚无调用方 |
 | `src/inject.ts` —— 通知生成与硬上限                                      | ⛔ 未开始       |
 | `src/resolve-detect.ts` —— 解决检测                                      | ⛔ 未开始       |
 | `src/tools.ts` —— 五个工具                                               | ⛔ 未开始       |
-| `tests/`                                                                 | ✅ `paths` 39 个用例（T05） |
+| `tests/`                                                                 | ✅ 286 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 58 与 `seeds` 5（T08）、`match` 40（T09）、`capture` 62（T10） |
 | 装进 `web` profile                                                       | ⛔ 未开始       |
 | 发布到 npm                                                               | ⛔ 未开始 —— 还没有 task 覆盖它，见[开发路线图](#开发路线图) |
 
@@ -149,6 +153,16 @@
 
 `agent/request-error` 上的监听器必须 `await next()` 并原样返回下游结果。它只观察，永不接管恢复。
 
+**只升级一次。** 瞬时错误按会话、按指纹计数，在计数**达到** `transientThreshold` 的那一次拿到编号 —— 之后不会每次都再升级。`capture` 里没列出的来源什么都不产出，连计数都没有。
+
+**签名只看一行（已定，[`docs/discussions.md`](docs/discussions.md) §2a）。** 多行输出 —— 带四十个错误的 `tsc`、一段 `pnpm install` 日志、一个 Python traceback —— 在算指纹前先压成一行标题，所以多出第四十一个错误、或日志顺序变了，编号都不变。`src/capture.ts` 的取法：
+
+1. Python traceback（含 `Traceback (most recent call last):`）取最后一个非空行 —— 这条最先判断，因为 traceback 会引用 `raise ValueError(...)` 这样的源码行；
+2. 否则取第一个匹配 `ERR_[A-Z0-9_]+|E[A-Z]{2,}|[A-Z]\w*Error|error TS\d+` 的行（`ERR`、`ERROR` 这类日志级别词不算）；
+3. 否则取最后一个非空行。
+
+标题行最长 200 字符；来源没给 code 时，标题行里的 code（`ERR_PNPM_…`、`EPERM`、`TS2307`、`ModuleNotFoundError`）记为条目的 `code`；完整文本留作原始样本。对命令而言，harness 自己追加的 `[exit code: N]` 标记不参与选标题行。
+
 ## 知识库落在哪里
 
 `kbDir` 按三级顺序解析：
@@ -161,20 +175,20 @@
 
 启动时插件会用一行日志打印**解析后的真实路径**，所以位置永远不是猜的；`err_stats` 也会打印它。
 
-开发期是 `link:` 安装，所以知识库就是本仓库里的 `errors/`，随 GitHub 一起走。clone 到任何机器、任何盘符，路径自动跟着走；**文档里永远不出现绝对路径**。
+**真实条目放在私有仓库里**（§17 第 4 问）。文本规则脱敏不可能完备，所以本公开仓库整个忽略 `errors/`，只在 [`seeds/ERRORS.seed.md`](seeds/ERRORS.seed.md) 里放精选、已脱敏的种子条目。要跨设备同步你的知识库，就在每台机器上 clone 一个你自己的私有仓库，并让 `kbDir` 指向它 —— 绝对路径，或相对插件根的路径都行。否则 `link:` 开发安装会落在本仓库的 `errors/` 里，而 git 现在会忽略它。无论哪种，**文档里永远不出现绝对路径**。
 
 这个目录里有什么：
 
 | 文件                | 角色                                                                     | 怎么对待它                                              |
 | ------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------- |
-| `ERRORS.md`         | **唯一真源** —— 编号条目，只追加                                         | 可手改，提交进 git                                      |
-| `ERRORS.archive.md` | 超出 `maxEntries` 后归档的老条目，只追加                                 | 提交进 git                                              |
+| `ERRORS.md`         | **唯一真源** —— 编号条目，只追加                                         | 可手改；提交进你的私有知识库仓库                        |
+| `ERRORS.archive.md` | 超出 `maxEntries` 后归档的老条目，只追加                                 | 提交进同一个私有仓库                                    |
 | `errors.index.json` | 派生缓存：指纹 → 编号                                                    | 可删，会从 `ERRORS.md` 重建；建议 gitignore             |
 | `state.json`        | 本机状态：命中数、`lastSeen`、`nextId`、环境指纹                         | 可删；**本机文件，绝不提交**                            |
 | `.machine.json`     | 设备标识 `deviceSlug`（如 `DESKTOP-A`），用于条目里的设备字段            | 可删可重建；设备本地文件，同样别进 git                  |
 | `.lock`             | 瞬时写锁，写完即删                                                       | 忽略它                                                  |
 
-给知识库目录一份够用的 `.gitignore`：
+给那个私有知识库仓库一份够用的 `.gitignore`：
 
 ```gitignore
 state.json
@@ -191,31 +205,35 @@ errors.index.json
 
 编号从 `E-0001` 起，由 `idPrefix`（默认 `E-`）与 `idWidth`（默认 `4`）拼出，并且**只增不改 —— 编号一旦写下就永不变更**，连合并冲突也不例外。
 
-单条目样例。机器字段装在 HTML 注释里，渲染后干净，手工编辑也安全：
+单条目样例（默认的英文字段名）。机器字段装在 HTML 注释里，渲染后干净，手工编辑也安全：
 
 ````md
 ## E-0007 · [tool:pwsh] EPERM: operation not permitted, rename
-<!-- errkb: sig=3f2a1c9d0b71 cat=tool code=EPERM first=2026-09-14T09:12:33Z device=DESKTOP-A proj=报错的回收再利用 -->
+<!-- errkb: sig=3f2a1c9d0b71 cat=tool code=EPERM first=2026-09-14T09:12:33Z -->
 
-- 指纹: `3f2a1c9d0b71`
-- 分类: `tool / pwsh`
-- 首次: 2026-09-14 09:12 · 最近: 2026-09-14 15:40 · 命中: 5
-- 触发: `pnpm install` 在中文路径下写 `node_modules` 时被占用
-- 原始信息:
+- Fingerprint: `3f2a1c9d0b71`
+- Category: `tool / pwsh`
+- First seen: 2026-09-14 09:12 · Last seen: 2026-09-14 15:40 · Hits: 5
+- Trigger: `pnpm install` writing `node_modules` under a non-ASCII path while another process holds it
+- Raw message:
   ```text
   EPERM: operation not permitted, rename '<path>\node_modules\.pnpm\<hash>'
   ```
-- 解法:
-  关闭占用该目录的编辑器/杀软实时扫描后重跑 `pnpm install`；仍失败则改用 `pnpm install --config.node-linker=hoisted`。
-- 状态: `fixed`
-- 备注:
+- Fix:
+  Close the editor or real-time antivirus scan holding the directory, then re-run `pnpm install`; if it persists, use `pnpm install --config.node-linker=hoisted`.
+- Status: `fixed`
+- Notes:
 ````
 
-**解析规则**：以 `^## (E-\d+) ·` 切块；块内 `<!-- errkb: ... -->` 提供机器字段；`- 解法:` 取到下一个 `- ` 字段为止。**你对文档的手工修改优先于索引** —— 索引只是缓存，所以你在任意 Markdown 阅读器里补写的解法，下一次命中就能用上。
+**字段名**：默认英文。设 `labels: 'zh'` 则改写设计文档 §8 的中文字段名（`指纹`、`分类`、`首次`、`最近`、`命中`、`触发`、`原始信息`、`解法`、`状态`、`备注`）。不管怎么设，解析器两套都认（全角 `：` 也认），所以一份文档可以混用；更新某条时会沿用它原来的语言。注释里的机器 key 永远是英文。
+
+**解析规则**：以 `^## (E-\d+) ·` 切块；块内 `<!-- errkb: ... -->` 提供机器字段；`- Fix:`（或 `- 解法:`）取到下一个已知字段开头的行为止，所以解法里可以有空行、列表和代码。**你对文档的手工修改优先于索引** —— 索引只是缓存，所以你在任意 Markdown 阅读器里补写的解法，下一次命中就能用上。每个块都保留原文：文档读出再写回逐字节一致，更新只重写被改的那一条。
+
+**该严的地方严**：git 冲突标记、格式错误的条目标题、缺机器注释、重复编号、未知状态、未闭合的代码围栏，都会让文档判为无法解析。此时原文件另存一次为 `ERRORS.corrupt-<时间戳>.md`，新条目只追加，更新一律拒绝，直到修好为止。
 
 **条目状态**：`open`、`fixed`、`wontfix`。把条目设为 `wontfix`（或标记为误判）会让它永久退出自动注入，但仍然计数 —— 这样一条坏记录不会反复污染上下文。
 
-> **字段语言仍未拍板。** 上面的落盘字段名是中文（`指纹`、`解法`、`状态`……），因为这是设计文档当前的规定；§17 第 2 问要决定它们保持中文还是改成英文（机器 key 无论哪种都是英文）。拍板后样例会同步更新 —— 见[待拍板的事项](#待拍板的事项)。
+> **字段语言已拍板（§17 第 2 问）：** 默认英文字段名，`labels: 'zh'` 切中文，两种都解析。设计文档样例里的 `device` 与 `proj` 机器字段这里没有写：它们随采集层一起到来，而公开模式下要哈希还是丢弃仍未定（`docs/discussions.md` §5）。
 
 ## 注入：什么时候开口、说多少
 
@@ -286,7 +304,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 然后**重启** `dsh web`。`dsh.profile.bundles` 的变化不在 `patchReload: live` 的监视范围内，所以是必须重启，不是可选。
 
-声明了 `dsh.bundle.patch` 的包会被自动并入 `dsh.profile.bundles` —— 不需要手工改 profile 配置。又因为开发期是 `link:` 安装，知识库会落在本仓库的 `errors/` 里 —— 这正是「靠 git 跨设备」能成立的原因。详见[知识库落在哪里](#知识库落在哪里)。
+声明了 `dsh.bundle.patch` 的包会被自动并入 `dsh.profile.bundles` —— 不需要手工改 profile 配置。又因为开发期是 `link:` 安装，未配置时知识库会落在本仓库的 `errors/` 里，而 git 会忽略它；要跨设备同步，请把 `kbDir` 指向你自己的私有仓库。详见[知识库落在哪里](#知识库落在哪里)。
 
 ## 用法
 
@@ -352,6 +370,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | `maxEntries`         | `200`                              | 超出后归档到 `ERRORS.archive.md`                                                                         |
 | `maxSampleChars`     | `500`                              | 原始样本的存储上限                                                                                       |
 | `exportDir`          | `''`                               | 可选的设备本地导出目录；空则关闭（例如某台机器上的 Obsidian 路径）                                        |
+| `labels`             | `'en'`                             | 新写入条目的字段名语言：`en` 或 `zh`。两种都始终能解析（[详见](#errorsmd-的格式)）                         |
 
 ## 隐私与脱敏
 
@@ -359,14 +378,18 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 脱敏是**强制的，而且发生在落盘之前，不是分享之前** —— 未脱敏的原文根本不会到磁盘，只存在于内存里，活到算出指纹为止。落盘前会被替换掉的内容：
 
-- 凭据与请求头：`sk-*`、`Bearer *`、`api[_-]?key=*`、`token=*`、`authorization:`；
+- 凭据与请求头：`sk-*`、`Bearer *`、`api[_-]?key=*`、`token=*`（以及 `password=`、`secret=`）、`authorization:`；
+- 平台与服务商密钥：GitHub（`ghp_`、`gho_`……、`github_pat_`）、AWS（`AKIA…`）、xAI（`xai-`）、Google（`AIza…`）；
 - 长 base64 串、32 位以上十六进制串、邮箱地址；
 - 原始 `requestId`；
-- 当 `share: 'public'`（默认）时额外：绝对路径压成 `<path>`，原始样本封顶 500 字符。
+- 家目录里的用户名（`/home/<名字>`、`/Users/<名字>`、`<盘符>:\Users\<名字>` 变成 `~`）；
+- 当 `share: 'public'`（默认）时额外：绝对路径压成 `<path>`，原始样本封顶 `maxSampleChars`（500）字符。
 
-`share: 'private'` 会保留项目内相对路径，自查更方便，但前提是这份文件只留在你自己的机器上。
+`share: 'private'` 会保留项目内相对路径和其余绝对路径，自查更方便，但前提是这份文件保持私有。
 
-**设计假设知识库会被 git 跟踪**，以便跨设备同步，脱敏是兜底。你要是不愿意，把 `share` 改成 `'private'`，并把 `ERRORS.md`、`ERRORS.archive.md` 加进 `.gitignore` 即可。
+凭据规则只有一份，在 `src/redact-patterns.ts`。CI 的隐私守卫是一条 shell `grep`，表达式是它自己的一份拷贝；有一条测试会解析 `.github/workflows/privacy-guard.yml`，只要那里有一类规则在该文件里找不到对应项就失败，两边不会再悄悄漂移。文本规则脱敏依然不可能完备 —— 内网主机名、SSH 报错里的 `user@host`、长度不够阈值的短 token 都会漏过去 —— 这正是下一段要把真实条目挡在公开仓库之外的原因。
+
+**真实条目永远不进公开仓库（§17 第 4 问）。** 脱敏是兜底，不是方案：知识库应当放在 `kbDir` 指向的私有仓库里，跨设备同步也靠它。本仓库忽略 `errors/`，只公开 `seeds/` 里的精选条目；有一条测试会对每个 `seeds/*.md` 跑 `redact()`，只要会改动一个字符就失败。用私有仓库时，`share: 'private'` 是合理的选择。
 
 目前还没有 `SECURITY.md`，也没有安全策略 —— 在有之前，任何未脱敏原文落进文档的情况都请当 bug 报出来。见[待拍板的事项](#待拍板的事项)。
 
@@ -379,7 +402,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | 监听器抛错 → 回合直接被关闭                 | 所有监听器包 `try/catch`；失败降级为「本次不记录」，在 `state.json` 累计并节流上报                        |
 | 抢走 `dsh-llm-retry` 的恢复权               | `agent/request-error` 必须 `await next()` 并原样返回 —— 只观察，不接管                                     |
 | 写文件阻塞回合                              | 本地写 + 3 次重试 + 500 ms 超时；超时则跳过该次记录，永不抛错                                              |
-| 多进程同写（web + headless 并发）           | `.lock` 文件（`wx` 打开，10 s 过期可抢占）+ 临时文件 + `rename` 原子替换                                   |
+| 多进程同写（web + headless 并发）           | `.lock` 文件（`wx` 打开，10 s 过期可抢占；抢占者按 token 只删自己判定过期的那把锁）+ 临时文件 + `rename` 原子替换                                   |
 | 磁盘只读、权限失败                          | 自动回退 `$DSH_HOME/errkb/`；再失败则本次静默跳过                                                          |
 | 文档被写坏                                  | 严格解析；解析失败时原文件另存为 `ERRORS.corrupt-<时间戳>.md`，新条目只做追加 —— **损坏的文档永不回写**     |
 | 密钥/隐私泄进公开仓库                       | 落盘前强制脱敏；`share: 'public'` 时连 `requestId` 都不保留                                                |
@@ -392,6 +415,8 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 **它不接管重试，这是刻意的。** `dsh-llm-retry` 拥有重试所有权，且每次重试都会再次计费。`agent/request-error` 的监听器必须 `await next()` 并原样返回结果。一个在这里「热心地」做恢复的插件，等于在和重试拥有者的正确性契约打架。
 
 **模糊匹配可能把两个只是长得像的报错并成一个。** 0.72 的相似度下，近似命中终究是没命中。缓解手段是社会性的而非算法性的：近似命中会在注入文本里标注为「近似」，且任何条目都能被标为误判，永久退出注入。
+
+**0.72 只是占位值，不是实测值。** T09 的测试证明阈值在 0.71 / 0.72 / 0.73 上按代码行为、中文按二元组切分；它们并不证明 0.72 就是对的数。这需要 [`docs/discussions.md`](docs/discussions.md) §3 提议的、由真实报错与「长得像但不同」配对组成的标注语料，而这份语料目前还没有。
 
 **知识库的质量等于写进去的东西的质量。** 一条没有解法的条目，注入时也没有解法 —— 那就是花 token 说了一句废话。这正是新条目会一次性提示补写解法、以及 `err_stats` 会报告有多少 open 条目在空耗的原因。
 
@@ -433,15 +458,15 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 | 状态 | Tasks                                                                |
 | ---- | -------------------------------------------------------------------- |
-| ✅   | T01–T05 —— 工程骨架（package、tsconfig、tsdown、vitest、bundle patch）与 paths |
-| 🔜   | T06–T09 —— signature、redact、store、match                           |
-| 🔜   | T10–T11 —— 采集层：分类，以及前两个钩子                              |
+| ✅   | T01–T09 —— 工程骨架（package、tsconfig、tsdown、vitest、bundle patch）、paths、signature、redact、store 与 match |
+| ✅   | T10 —— 分类、标题行提取与瞬时噪声规则                                |
+| 🔜   | T11 —— 前两个钩子：`agent/error` 与 `tools/result`                   |
 | 🔜   | T12–T14 —— 注入层：通知文本、四个注入点、解决检测                    |
 | 🔜   | T15 —— 五个工具                                                      |
 | 🔜   | T16–T17 —— LLM 失败接入，以及安装进 web profile                      |
 | 🔜   | T18 —— 可选：Obsidian 导出                                           |
 
-T01–T05 已勾选并合并。其余仍开放；T18 随时可以砍掉，不影响主线。
+T01–T10 已勾选；T01–T05 已合并到上游，T06–T10 尚未合并。其余仍开放；T18 随时可以砍掉，不影响主线。
 
 ### 阶段对照
 
@@ -449,10 +474,10 @@ T01–T05 已勾选并合并。其余仍开放；T18 随时可以砍掉，不影
 
 | 阶段         | Tasks   | 完成标志                                                              |
 | ------------ | ------- | --------------------------------------------------------------------- |
-| P0           | ——      | 设计文档已写完，且**你已补齐 §17** —— §17 仍未补齐                  |
+| P0           | ——      | 设计文档已写完，且**你已补齐 §17** —— 8 问已答 2 问（第 2、4 问）   |
 | P1           | T01–T04 | ✅ `pnpm typecheck` 通过 —— 本地与 CI 均已验证                       |
-| P2           | T05–T09 | 单测全绿，覆盖率达标                                                  |
-| P3           | T10–T11 | 一条必然失败的命令产出 `E-0001`                                       |
+| P2           | T05–T09 | ✅ 单测全绿；T05–T09 各模块语句与行覆盖 100%（全局门槛还统计 `src/index.ts`，由 T11 接上） |
+| P3           | T10–T11 | 一条必然失败的命令产出 `E-0001` —— T10 已完成（语句与行覆盖 100%），T11 未开始 |
 | P4           | T12–T14 | 重复的失败被自动注入，模型不再重新诊断                                |
 | P5           | T15     | 模型可调 `err_lookup` 与 `err_record`                                 |
 | P6           | T16–T17 | `--dump-config` 可见该条目；云端与本地报错各记一条                    |
@@ -474,11 +499,11 @@ T01–T05 已勾选并合并。其余仍开放；T18 随时可以砍掉，不影
 | ☑ T03 | 配置 vitest 与覆盖率门槛   | `vitest.config.ts`、`tests/`                                                 | `pnpm test` 跑通                                                   |
 | ☑ T04 | bundle patch 与空 `apply`  | 插件入口：`name`、`inject`、`Config`、`apply`                                | `pnpm typecheck` 通过                                              |
 | ☑ T05 | 解析库路径                 | `src/paths.ts` —— 三级解析、启动日志                                         | 三种情形各返回预期路径                                             |
-| ☐ T06 | 规范化与指纹               | `src/signature.ts`                                                           | 路径、行号、PID、时间戳、UUID 变化 → 指纹不变；不同报错 → 指纹不同 |
-| ☐ T07 | 脱敏                       | `src/redact.ts`                                                              | 断言输出中 0 命中                                                  |
-| ☐ T08 | 文档存储                   | `src/store.ts` —— 解析、渲染、追加、归档、锁、原子写                         | 写读往返一致；手改的解法能读回；并发 50 次记录产出 50 个唯一编号   |
-| ☐ T09 | 匹配                       | `src/match.ts` —— 精确、模糊、code 兜底、误判兜底                            | 边界值 0.71 / 0.72 / 0.73 符合规格                                 |
-| ☐ T10 | 分类与噪声抑制             | `src/capture.ts`                                                             | 瞬时错误达阈值前不编号；关闭采集则零写入                           |
+| ☑ T06 | 规范化与指纹               | `src/signature.ts`                                                           | 路径、行号、PID、时间戳、UUID 变化 → 指纹不变；不同报错 → 指纹不同 |
+| ☑ T07 | 脱敏                       | `src/redact.ts`                                                              | 断言输出中 0 命中                                                  |
+| ☑ T08 | 文档存储                   | `src/store.ts` —— 解析、渲染、追加、归档、锁、原子写                         | 写读往返一致；手改的解法能读回；并发 50 次记录产出 50 个唯一编号   |
+| ☑ T09 | 匹配                       | `src/match.ts` —— 精确、模糊、code 兜底、误判兜底                            | 边界值 0.71 / 0.72 / 0.73 符合规格                                 |
+| ☑ T10 | 分类与噪声抑制             | `src/capture.ts`                                                             | 瞬时错误达阈值前不编号；关闭采集则零写入                           |
 | ☐ T11 | 接前两个钩子               | `agent/error`、`tools/result` 监听器                                         | 一条必然失败的命令产出 `E-0001`                                    |
 | ☐ T12 | 生成通知                   | `src/inject.ts` —— 模板、上限、去重                                          | 上限成立；source 形状与 summary 长度精确                           |
 | ☐ T13 | 接四个注入点               | `tools/post-execute`、`agent/pre-step`、`agent/session-start`、system prompt | 重复的失败被自动注入，模型不再重新诊断                             |
@@ -529,7 +554,7 @@ pnpm format:check     # prettier --check .（CI 跑的就是这条）
 | 「注入太吵了。」                          | `inject: 'off'` 彻底关掉注入而采集继续；`systemPromptHint: false` 去掉常驻的 50 token 段；`sessionDigest: 'off'` 去掉开场摘要   |
 | 「某条条目一直带着错误解法被注入。」       | 用 `err_record` 把它设成 `wontfix`，或标记为误判 —— 它不再被自动注入，但仍在计数                                              |
 | 「`ERRORS.md` 看起来坏了。」              | 插件永不回写自己解析不了的文档：原文件会另存为 `ERRORS.corrupt-<时间戳>.md`，新条目只追加在其后。修好另存的那份再放回去         |
-| 「我手改了某条解法，却没生效。」          | 手工修改优先于索引，本不该发生 —— 检查改动是否落在 `- 解法:` 字段内、且在下一条 `- ` 字段之前，然后删掉 `errors.index.json` 强制重建 |
+| 「我手改了某条解法，却没生效。」          | 手工修改优先于索引，本不该发生 —— 检查改动是否落在 `- Fix:`（或 `- 解法:`）字段内、且在下一个字段名之前，然后删掉 `errors.index.json` 强制重建 |
 | 「我想从头来过。」                        | 删 `state.json`（计数器）、删 `errors.index.json`（缓存），两者都会重建。删 `ERRORS.md` 就是删知识 —— 那才是唯一要紧的文件      |
 | 「两台机器的计数对不上。」                | 预期如此：计数器是本机的，刻意不进 git。共享的只有知识                                                                        |
 
@@ -541,14 +566,14 @@ pnpm format:check     # prettier --check .（CI 跑的就是这条）
 
 ## 待拍板的事项
 
-**这些现在具体卡住的是 T06–T08。** P1 已完成，P2 进行中（T05 已合并），但 §17 的 8 个问题与建议默认值仍未回答，其中几问直接决定接下来做什么：第 2 问（字段名语言）决定 T08 的文档格式，第 4 问（是否提交 `errors/`）决定 T07 脱敏与 T08 存储要多严格，第 5 问（复用范围）影响 T09 的匹配，第 6 问（`captureExitCodes`）影响 T10 的分类（见[阶段对照](#阶段对照)）。答案写在 §17 的「你的回答」列里，或者随便写在 [`docs/设计说明书.md`](docs/设计说明书.md) 的 §19 批注区。
+**已定 2 问，剩 6 问。** 第 2 问与第 4 问已为 T07–T08 作答，并记入 §17。其余几问仍决定后续 task 做什么：第 5 问（复用范围）影响 T09 的匹配，第 6 问（`captureExitCodes`）影响 T10 的分类（见[阶段对照](#阶段对照)）。答案写在 §17 的「你的回答」列里，或者随便写在 [`docs/设计说明书.md`](docs/设计说明书.md) 的 §19 批注区。
 
 | # | 问题                                              | 建议默认值                                                          | 状态 |
 | - | ------------------------------------------------- | ------------------------------------------------------------------- | ---- |
 | 1 | 包名 / 插件 id / 工具前缀 / 编号前缀              | `dsh-errkb` / `err-kb` / `err_` / `E-` —— 2026-10-01 核查时两个 npm 名均未被占用（registry 404） | 未定 |
-| 2 | 文档字段名用什么语言                              | 字段名中文 + 机器 key 英文                                          | 未定 |
+| 2 | 文档字段名用什么语言                              | 字段名中文 + 机器 key 英文                                          | **已定：** 默认英文字段名，`labels: 'zh'` 切中文；两种都解析 |
 | 3 | 接受「计数器不进 git、只同步知识」                | 接受                                                                | 未定 |
-| 4 | `errors/` 是否直接提交进 GitHub 仓库              | 是，以强制脱敏作为兜底                                              | 未定 |
+| 4 | `errors/` 是否直接提交进 GitHub 仓库              | 是，以强制脱敏作为兜底                                              | **已定：** 否 —— 真实知识库放私有仓库（`kbDir` 指向它）；本仓库忽略 `errors/`，只放精选 `seeds/` |
 | 5 | 复用范围                                          | 所有项目共用一个库，用条目里的 project 字段区分来源                 | 未定 |
 | 6 | `captureExitCodes` 默认开还是关                   | 开 —— 命令失败是最常见的复用场景                                    | 未定 |
 | 7 | P7 要哪些（GUI 面板 / 自动执行修复命令 / Obsidian 导出） | 先只要 Obsidian 导出                                          | 未定 |

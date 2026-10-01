@@ -33,7 +33,7 @@ On one failing step the model can therefore read "apply E-0007, do not re-diagno
 
 ## 2. Fingerprint gaps (T06)
 
-**(a) Multi-line output.** `tsc` with forty errors, a `pnpm install` log, or a Python traceback (where the *last* line matters) all arrive as one block. Fingerprinting the whole block means one extra error gives a new ID. Proposal: a headline extractor that runs before normalisation —
+**(a) Multi-line output.** **Decided (T10):** the proposal below, implemented in `src/capture.ts` (`extractHeadline`), with the traceback rule checked first. `tsc` with forty errors, a `pnpm install` log, or a Python traceback (where the *last* line matters) all arrive as one block. Fingerprinting the whole block means one extra error gives a new ID. Proposal: a headline extractor that runs before normalisation —
 
 1. the first line matching `ERR_[A-Z_]+|E[A-Z]{2,}|[A-Z]\w*Error|error TS\d+`;
 2. for a traceback (`Traceback (most recent call last):`), the last non-empty line;

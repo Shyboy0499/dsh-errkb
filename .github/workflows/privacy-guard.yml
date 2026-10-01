@@ -26,12 +26,17 @@ jobs:
       # prose in `X:\...` and `\\?\...` on one line of the design document and
       # reports a leak that is not there.
       #
+      # The e-mail alternative allows zero or more subdomains before the listed
+      # domain. An earlier form demanded at least one (`[A-Za-z0-9.-]+\.gmail\.com`),
+      # so a plain address at gmail.com, qq.com or any other listed provider
+      # passed unnoticed; tests/redact-patterns.test.ts caught it.
+      #
       # The check is deliberately blunt and local: it catches what a human
       # forgets to look for. Placeholders such as <repo-root> are the intended
       # way to write about a machine-specific location in this repository.
       - name: Reject personal data and credentials
         run: |
-          PATTERN='[A-Za-z]:\\[^\\`]+\\|/Users/[A-Za-z0-9._-]+/|/home/[A-Za-z0-9._-]+/|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(edu|edu\.[a-z]{2}|ac\.[a-z]{2}|gmail\.com|outlook\.com|hotmail\.com|qq\.com|163\.com|126\.com)|sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|Bearer [A-Za-z0-9._~+/-]{20,}'
+          PATTERN='[A-Za-z]:\\[^\\`]+\\|/Users/[A-Za-z0-9._-]+/|/home/[A-Za-z0-9._-]+/|[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+\.)*(edu|edu\.[a-z]{2}|ac\.[a-z]{2}|gmail\.com|outlook\.com|hotmail\.com|qq\.com|163\.com|126\.com)|sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|Bearer [A-Za-z0-9._~+/-]{20,}'
           if grep -rInE "$PATTERN" --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=lib . ; then
             echo "::error::Personal data or credential-shaped text found above. Replace machine-specific locations with <repo-root> and remove the rest."
             exit 1
