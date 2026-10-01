@@ -51,6 +51,7 @@
 - [Uninstall](#uninstall)
 - [Open decisions](#open-decisions)
 - [Future work](#future-work)
+- [Related projects](#related-projects)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -577,6 +578,26 @@ Recorded in §18 of the design document. None of it is scheduled; T18 can be dro
 8. **Team sharing** — because the document is in git, putting `errors/` in a team repository makes it a shared pitfall knowledge base; an `err_promote` could raise a local entry to a public one.
 9. **Web GUI panel** — the full version of the rejected option: a third-party package can declare `dsh.client` (`platform: 'web'`) plus a client module for a list view, hit curves and a settings page. Rebuilding the web artifacts makes it expensive; evaluate after P6 is stable.
 10. **Reverse use** — `err_list --status open` is a ready-made "what is still broken in this project" list, usable as an issue draft or an onboarding document for newcomers.
+
+## Related projects
+
+Surveyed from the [`dsh-plugin`](https://github.com/topics/dsh-plugin) GitHub topic on 2026-09-30 and re-checked on 2026-10-01. Several plugins capture errors; none gives an error a stable ID across sessions and pushes the recorded fix back before the model starts diagnosing.
+
+| Project | What it does | How it differs |
+| ------- | ------------ | -------------- |
+| [166767/dsh-error-audit](https://github.com/166767/dsh-error-audit) | Listens to the same three hooks (`agent/error`, `agent/request-error`, `tools/result`), writes every error to `$DSH_HOME/error-audit/`, notifies the model, and exposes a `read_error_logs` tool | A log, not a knowledge base: no deduplication and no stored fix |
+| [d86e/dsh-doctor](https://github.com/d86e/dsh-doctor) | Captures failed tool results and classifies them as transient / agent / business | Observes and classifies; never injects a fix |
+| [Wanbinyu/dsh-error-lens](https://github.com/Wanbinyu/dsh-error-lens) | Redacted diagnostics for provider errors (401, 403, 429, context overflow, …) | Session-scoped, nothing persisted. Its README states that text-rule redaction cannot be complete — the same limit applies to §4.4 here |
+| [Leitarkkk/dsh-research-nudge](https://github.com/Leitarkkk/dsh-research-nudge) | Uses the same injection point (`tools/post-execute` → `additionalContexts`) to nudge the model to research once failures, repetitions and tool calls pile up | In-session only; can fire on the same step as an `err-kb` notice |
+
+Adjacent, outside `dsh`:
+
+- [vshulcz/deja-vu](https://github.com/vshulcz/deja-vu) — local search over past agent sessions, no LLM involved.
+- [thedotmack/claude-mem](https://github.com/thedotmack/claude-mem), [MemTensor/MemOS](https://github.com/MemTensor/MemOS) — general-purpose agent memory; both spend model calls (summarisation or embeddings) to build it.
+- [ankitkr3/compounded](https://github.com/ankitkr3/compounded) — learned lessons gain trust with clean uses and are demoted when they steer a task wrong.
+- [Sentry event grouping](https://docs.sentry.io/concepts/data-management/event-grouping/) — the established prior art for fingerprinting and grouping errors.
+
+Where `dsh-errkb` sits: **stable, human-readable IDs** (`E-0007`) that survive across sessions and machines; the **fix is injected before diagnosis**, in at most 120 tokens; **Markdown is the source of truth**, edited by hand and merged by git; and **zero model calls** — capture, matching and injection are all local text processing.
 
 ## Contributing
 
