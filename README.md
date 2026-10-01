@@ -12,10 +12,11 @@
 
 > **Status: P2 in progress.** The design document is written and under review —
 > eight decisions in its §17 are still open — and the work is broken into
-> [eighteen tasks](#roadmap) across seven milestones. **T01–T05 are done:** the
+> [eighteen tasks](#roadmap) across seven milestones. **T01–T06 are done:** the
 > package installs, builds, type checks, lints, formats and tests, CI runs all
-> five on every pull request, and the knowledge-base directory resolution (T05)
-> has landed as the first module of the pure local layer.
+> five on every pull request, and the pure local layer has its first two
+> modules: knowledge-base directory resolution (T05) and error normalization and
+> fingerprinting (T06).
 >
 > **The plugin still does nothing.** `apply` writes one startup line, and it is
 > not installed into any profile yet (that is T17), so there is no behaviour to
@@ -68,7 +69,7 @@
 | `cordis.patch.yml` — bundle patch                                         | ✅ In place (T04)          |
 | `src/index.ts` — plugin entry (`name`, `inject`, `Config`, `apply`)       | ✅ In place (T04), entry only — no behaviour |
 | `src/paths.ts` — KB directory resolution                                  | ✅ In place (T05), 100% covered |
-| `src/signature.ts` — normalization and fingerprinting                     | ⛔ Not started             |
+| `src/signature.ts` — normalization and fingerprinting                     | ✅ In place (T06), 100% covered — not called by anything yet |
 | `src/redact.ts` — mandatory redaction                                     | ⛔ Not started             |
 | `src/store.ts` — parse, render, append, archive                           | ⛔ Not started             |
 | `src/match.ts` — exact, fuzzy and fallback matching                       | ⛔ Not started             |
@@ -77,7 +78,7 @@
 | `src/inject.ts` — notice generation and hard caps                         | ⛔ Not started             |
 | `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
 | `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
-| `tests/`                                                                  | ✅ 39 cases for `paths` (T05) |
+| `tests/`                                                                  | ✅ 69 cases: `paths` 39 (T05), `signature` 30 (T06) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -438,15 +439,15 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 
 | State | Tasks                                                                                   |
 | ----- | --------------------------------------------------------------------------------------- |
-| ✅    | T01–T05 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), and paths |
-| 🔜    | T06–T09 — signature, redact, store, match                                               |
+| ✅    | T01–T06 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), paths and signature |
+| 🔜    | T07–T09 — redact, store, match                                                          |
 | 🔜    | T10–T11 — the capture layer: classification, and the first two hooks                    |
 | 🔜    | T12–T14 — the injection layer: notice text, four injection points, resolution detection |
 | 🔜    | T15 — the five agent tools                                                              |
 | 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
 | 🔜    | T18 — optional: Obsidian export                                                         |
 
-T01–T05 are checked off and merged. The rest are open; T18 can be dropped at any point without touching the main line.
+T01–T06 are checked off. T01–T05 are merged; T06 is in review. The rest are open; T18 can be dropped at any point without touching the main line.
 
 ### Milestone mapping
 
@@ -479,7 +480,7 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 | ☑ T03 | Configure vitest and the coverage gate | `vitest.config.ts`, `tests/`                                                 | `pnpm test` runs                                                                                     |
 | ☑ T04 | Bundle patch and an empty `apply`      | Plugin entry: `name`, `inject`, `Config`, `apply`                            | `pnpm typecheck` passes                                                                              |
 | ☑ T05 | Resolve the KB path                    | `src/paths.ts` — three-tier resolution, startup log                          | Each of the three cases returns the expected path                                                    |
-| ☐ T06 | Normalize and fingerprint              | `src/signature.ts`                                                           | Changed path, line, PID, timestamp or UUID → same signature; different errors → different signatures |
+| ☑ T06 | Normalize and fingerprint              | `src/signature.ts`                                                           | Changed path, line, PID, timestamp or UUID → same signature; different errors → different signatures |
 | ☐ T07 | Redact                                 | `src/redact.ts`                                                              | Zero hits in the output, asserted                                                                    |
 | ☐ T08 | Store the document                     | `src/store.ts` — parse, render, append, archive, lock, atomic write          | Round-trip identity; hand-edited fixes read back; 50 concurrent records yield 50 unique IDs          |
 | ☐ T09 | Match                                  | `src/match.ts` — exact, fuzzy, code fallback, mis-flag fallback              | Boundary values 0.71 / 0.72 / 0.73 behave as specified                                               |
