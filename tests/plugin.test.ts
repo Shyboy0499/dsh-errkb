@@ -687,6 +687,64 @@ describe("recorder: §13 write budget, retries and throttled logging", () => {
 // ---------------------------------------------------------------------------
 // Payload readers
 
+describe("recorder: recordFix (T14)", () => {
+  it("writes the fix, redacted, and marks the entry fixed", async () => {
+    const { rec, files } = recorder();
+    rec.capture({ kind: "agent", error: new Error("boom") });
+    const secret = "sk-" + "a".repeat(24);
+    const outcome = await rec.recordFix(
+      "E-0001",
+      `export OPENAI_KEY=${secret} and retry`,
+    );
+    expect(outcome).toMatchObject({
+      kind: "fixed",
+      entry: { id: "E-0001", status: "fixed" },
+    });
+    const [entry] = await readEntries(files.errors);
+    expect(entry?.status).toBe("fixed");
+    expect(entry?.fix).toContain("and retry");
+    expect(entry?.fix).not.toContain(secret);
+  });
+
+  it("is serialized behind the writes queued before it", async () => {
+    const { rec } = recorder();
+    rec.capture({ kind: "agent", error: new Error("boom") });
+    // Queued right after the append, which has not run yet: it still finds
+    // the entry.
+    expect((await rec.recordFix("E-0001", "f")).kind).toBe("fixed");
+  });
+
+  it("an unknown ID writes nothing", async () => {
+    const { rec } = recorder();
+    expect(await rec.recordFix("E-0042", "f")).toEqual({ kind: "unknown" });
+  });
+
+  it("a lock held for the whole budget is a timeout, not a failure", async () => {
+    const { clock } = fakeClock();
+    const files = filesIn(dir);
+    const real = nodeStoreFs();
+    const fs: StoreFs = {
+      ...real,
+      createExclusive: async () => false,
+      readFile: async (path) =>
+        path === files.lock ? "someone-else" : real.readFile(path),
+      mtimeMs: async (path) =>
+        path === files.lock ? clock.now().getTime() : real.mtimeMs(path),
+    };
+    const { rec, warnings } = recorder({ fs, clock });
+    expect(await rec.recordFix("E-0001", "f")).toEqual({ kind: "timeout" });
+    expect(warnings).toEqual([]);
+  });
+
+  it("a document that does not parse is counted as a failure", async () => {
+    const { rec, files, warnings } = recorder();
+    await writeFile(files.errors, "# ERRORS\n\n## E-0001 · broken\n");
+    expect(await rec.recordFix("E-0001", "f")).toEqual({ kind: "failed" });
+    expect(rec.stats.failures).toBe(1);
+    expect(warnings).toHaveLength(1);
+  });
+});
+
 describe("commandFrom", () => {
   it("reads the common argument spellings", () => {
     expect(commandFrom("ls -la")).toBe("ls -la");

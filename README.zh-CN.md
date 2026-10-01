@@ -1,6 +1,6 @@
 # dsh-errkb · 报错回收再利用
 
-![状态](https://img.shields.io/badge/status-P4%20in%20progress-yellow)
+![状态](https://img.shields.io/badge/status-P4%20complete-yellow)
 ![许可证](https://img.shields.io/github/license/jingchangzhao-gif/dsh-errkb)
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
@@ -10,20 +10,21 @@
 
 `dsh-errkb` 是一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）插件。它把模型遇到的报错变成一份带编号、人可编辑的知识库 —— 然后在模型**开始诊断之前**，把已记录的解法塞回上下文。
 
-> **状态：P4 进行中。** 设计文档已写完、正在审查中 —— 其中 §17 的 8 项里还有 6 项
+> **状态：P4 已完成。** 设计文档已写完、正在审查中 —— 其中 §17 的 8 项里还有 6 项
 > 未拍板（第 2、4 问已定）—— 工作被拆成 **18 个 task**，归入 7 个里程碑。
-> **T01–T13 已完成：** 包装得上、构建得出、过得了类型检查与 lint、格式与测试也都
+> **T01–T14 已完成：** 包装得上、构建得出、过得了类型检查与 lint、格式与测试也都
 > 跑得通（99% 覆盖率门槛已真正生效），CI 在每次 PR 上都会执行这五步；纯本地层
 > 已经齐全：知识库目录解析（T05）、报错规范化与指纹（T06）、强制脱敏（T07）、
 > `ERRORS.md` 存储（T08）与匹配（T09）。采集层已经接通：分类与噪声规则（T10），
 > 以及前两个钩子 `agent/error` 与 `tools/result`（T11）。注入层已经开口：通知
-> 文本、上限与解法信任（T12）已接到四个注入点上（T13）。
+> 文本、上限与解法信任（T12）已接到四个注入点上（T13），解决检测（T14）把闭环补上。
 >
 > **装上之后，插件会记录，也会注入。** 装进 profile 后，`apply` 会打出知识库位置，
 > 把工具失败、命令非零退出和回合级异常记进 `ERRORS.md`，并在同一报错再次出现时、
-> 在下文的上限之内把已记录的解法交回给模型。还缺：解决检测（T14），所以解法只有
-> 在有人把它写进 `ERRORS.md` 之后才存在；工具（T15）；LLM 请求失败的采集（T16）；
-> 以及安装进 profile（T17）—— 目前还没有任何东西替你装上它。下面标着「尚未实现」
+> 在下文的上限之内把已记录的解法交回给模型。已记录的报错不再失败时，它的解法会获得
+> 信任；没有解法的条目会收到一次提示，请模型说出解法（T14）。还缺：工具（T15），
+> 所以还没有东西把这个回答写进 `ERRORS.md` —— 解法只有在有人手工写进去之后才存在；
+> LLM 请求失败的采集（T16）；以及安装进 profile（T17）—— 目前还没有任何东西替你装上它。下面标着「尚未实现」
 > 的部分，依然只是目标路径的描述。
 >
 > - 设计文档：[`docs/设计说明书.md`](docs/设计说明书.md) —— 19 节
@@ -71,7 +72,7 @@
 | `.prettierignore`、`.gitattributes` —— 格式与行尾策略                    | ✅ 就位          |
 | `cordis.patch.yml` —— bundle patch                                       | ✅ 就位（T04）    |
 | `src/index.ts` —— 插件入口（`name`、`inject`、`Config`、`apply`）        | ✅ 就位（T04）；`apply` 读取配置，注册 `agent/error` 与 `tools/result` 监听器（T11）以及四个注入点（T13） |
-| `src/plugin.ts` —— 采集流水线与注入接线                                  | ✅ 就位（T11、T13），语句与行覆盖 100% |
+| `src/plugin.ts` —— 采集流水线与注入接线                                  | ✅ 就位（T11、T13、T14），语句与行覆盖 100% |
 | `src/paths.ts` —— 库目录解析                                             | ✅ 就位（T05），覆盖 100% |
 | `src/signature.ts` —— 规范化与指纹                                       | ✅ 就位（T06），覆盖 100% —— 由采集与匹配调用 |
 | `src/redact.ts`、`src/redact-patterns.ts` —— 强制脱敏                    | ✅ 就位（T07），覆盖 100% —— 存储每次写入都会套用 |
@@ -81,9 +82,9 @@
 | `src/state.ts` —— `state.json`、`.machine.json`、环境指纹                | ⛔ 未开始       |
 | `src/capture.ts` —— 分类、标题行提取与噪声规则                           | ✅ 就位（T10），语句与行覆盖 100% —— 由 T11 的监听器调用 |
 | `src/inject.ts` —— 通知生成、硬上限与解法信任                            | ✅ 就位（T12），语句与行覆盖 100% —— 已接到四个注入点（T13） |
-| `src/resolve-detect.ts` —— 解决检测                                      | ⛔ 未开始       |
+| `src/resolve-detect.ts` —— 解决检测                                      | ✅ 就位（T14），语句与行覆盖 100% —— 由 `tools/result` 驱动；`recordFix()` 等 `err_record`（T15）来调用 |
 | `src/tools.ts` —— 五个工具                                               | ⛔ 未开始       |
-| `tests/`                                                                 | ✅ 436 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 58 与 `seeds` 5（T08）、`match` 40（T09）、`capture` 67（T10）、`plugin` 34（T11）、`inject` 66（T12、T13）、`injection` 45（T13） |
+| `tests/`                                                                 | ✅ 482 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 58 与 `seeds` 5（T08）、`match` 40（T09）、`capture` 67（T10）、`plugin` 39（T11、T14）、`inject` 68（T12–T14）、`injection` 65（T13、T14）、`resolve-detect` 19（T14） |
 | 装进 `web` profile                                                       | ⛔ 未开始       |
 | 发布到 npm                                                               | ⛔ 未开始 —— 还没有 task 覆盖它，见[开发路线图](#开发路线图) |
 
@@ -99,8 +100,9 @@
 
 > **设计已定，大部分尚未实现。** 以下每一条都在设计文档里有规格、有测试计划。
 > 「记录」与「注入」都在跑：稳定编号、同一报错一个编号、强制脱敏，对 T11 监听器
-> 写入的内容生效；已记录的解法会在诊断之前注入（T13）。解法还不会被自动检测（T14），
-> 工具与账本都还不存在 —— 见[目前完成到哪一步](#目前完成到哪一步)。
+> 写入的内容生效；已记录的解法会在诊断之前注入（T13）；报错看起来已解决时会被察觉，
+> 并一次性请模型给出解法（T14）。把回答写下来的工具和账本都还不存在 —— 见
+> [目前完成到哪一步](#目前完成到哪一步)。
 
 | 行为                 | 细节                                                     |
 | -------------------- | -------------------------------------------------------- |
@@ -270,6 +272,7 @@ re-diagnosing or researching.
 | 注入后同一报错又出现         | `… \| fix: … This fix failed here last time; verify before applying.`                 |
 | 命中但条目没有解法           | `[errkb] E-0007 seen before (5 hits), no fix recorded yet.` —— 很短，约 15 token        |
 | 未命中，且 `inject: 'always'` | `[errkb] recorded as E-0011 (no fix yet).` —— 默认的 `hit-only` 下不出声               |
+| 没有解法的条目看起来已解决   | `[errkb] E-0011 looks resolved. State the fix in one sentence so it can be reused.` —— 每个条目每会话一次，随下一步送达（T14） |
 | `wontfix` 或误判条目         | 永不出声                                                                               |
 
 **上限是硬上限，而且上限本身就是设计。** 每步最多 1 条通知、每回合最多 3 条、同一编号每会话最多 2 次；每条通知按保守估算 ≤ 120 token（每个非 ASCII 字符算 1 token，ASCII 每 3 个字符算 1 token），且 ≤ 400 字符。超长时先缩成因、再缩解法，结尾那句指令永远不被截掉。插件来源消息的 `summary` 交给 dsh-llm 自带的 `boundContextSummary`，因此 ≤ 120 字符，对应 `{kind:'plugin', plugin:'err-kb', form:'notice', summary}` 的形状（`@deepseek-ai/dsh-llm` 里的 `MessageSourceMap['plugin']`）。状态为 `fixed` 的条目提示一次后即静默。没有上限的版本比不装还糟：用持续噪声换来的命中率，会把收益变成成本。
@@ -285,6 +288,7 @@ re-diagnosing or researching.
 - **死掉的回合，通知随下一步送达。** 回合级错误在采集时就查库，结果追加进下一步的入场消息。LLM 请求失败只有在以 `agent/error` 结束回合时才走这条路；`agent/request-error` 本身属于 T16。
 - **按会话计预算。** 每个会话（`Agent.id`）一个上限计数器，只保留最近活跃的 64 个会话。`agent/pre-step` 上出现新的 `turn` 编号即开始新回合，每次 pre-step 开始新一步；`agent/session-start`（含 `clear` 与 `compact`）让该会话的预算从头算。不属于任何 agent 的工具调用永不注入。
 - **开场摘要**在 `counts` 下就一行：`[errkb] 37 known errors; known fixes are shown when an error repeats.`；`index` 再列出命中最多的至多 10 条，`wontfix` 与误判条目不列。知识库为空时不发摘要。
+- **解决检测（T14，`src/resolve-detect.ts`）。** 会话里一次工具调用被记到某个条目上之后 —— 新条目或命中，注入与否都算 —— 这个条目就按一个键被盯住：命令非零退出用命令行，工具失败用工具名。之后同一会话里、在**窗口**之内 —— 那个回合剩下的部分加上整个下一回合 —— 同一个键上出现一次成功的调用，就算它已解决。条目再次出现时，从这次重现起重新盯，键换成最后失败的那个；所以只跟在较早一次出现之后的成功不算解决。新的会话生命周期（`clear`、`compact`）会忘掉所有在盯的条目。已解决条目的解法在解法信任里记一次成功，这会解除压制。没有解法的条目，在 `captureFix: 'prompt-once'`（默认）且 `inject` 不是 `off` 时，会在下一步收到上表那条一次性提示：它和其他通知一样占用每步与每回合的额度，但有自己的每编号额度；被上限挡住时等后面的步，窗口关闭后就不说了直接丢弃。同一会话里绝不问第二次，`wontfix` 与误判条目从不被问。模型的回答不会从它的自由文本里解析：写入解法的唯一入口是 `err_record`（T15），它调用记录器的 `recordFix(id, fix)`，把解法（由存储层脱敏）写入并把状态设为 `fixed`，不在回合里进行，与其他写入排队。回合级异常（`agent/error`）之后没有工具可以成功，因此不被盯。
 - **常驻段**原文如下：`Errors are tracked by the errkb plugin. A context line starting with [errkb] names a known error and, when one is recorded, its fix: try that fix before re-diagnosing. When you resolve an error that has no recorded fix, state the fix in one short sentence.` 它没有提 `err_record`，因为这个工具到 T15 才存在；T15 会把最后一句改成指向该工具。
 
 ## token 账本
@@ -392,7 +396,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | `captureExitCodes`   | `true`                             | 是否记录非零退出的命令                                                                                   |
 | `transientThreshold` | `5`                                | 瞬时 LLM 错误升级为编号条目所需的次数                                                                    |
 | `fuzzyThreshold`     | `0.72`                             | 模糊匹配所需的相似度（取值区间 0.5–1.0）                                                                 |
-| `captureFix`         | `'prompt-once'`                    | `prompt-once` 或 `off`：新条目是否一次性提示模型补写解法                                                  |
+| `captureFix`         | `'prompt-once'`                    | `prompt-once` 或 `off`：没有解法的条目看起来已解决时，是否每会话一次提示模型说出解法；其他值退回 `prompt-once` |
 | `inject`             | `'hit-only'`                       | `hit-only`、`always` 或 `off`；其他取值一律按 `hit-only` 处理                                             |
 | `sessionDigest`      | `'counts'`                         | 会话开场摘要：`off`、`counts` 或 `index`（最多 10 条）；其他取值一律按 `counts` 处理                       |
 | `systemPromptHint`   | `true`                             | 是否注入那 50 token 的行为约定段                                                                         |
@@ -496,12 +500,12 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | ✅   | T11 —— 前两个钩子：`agent/error` 与 `tools/result`                   |
 | ✅   | T12 —— 通知文本、硬上限与解法信任                                    |
 | ✅   | T13 —— 四个注入点                                                    |
-| 🔜   | T14 —— 解决检测，注入层的最后一块                                    |
+| ✅   | T14 —— 解决检测，注入层的最后一块                                    |
 | 🔜   | T15 —— 五个工具                                                      |
 | 🔜   | T16–T17 —— LLM 失败接入，以及安装进 web profile                      |
 | 🔜   | T18 —— 可选：Obsidian 导出                                           |
 
-T01–T13 已勾选；T01–T10 已合并到上游，T11–T13 尚未合并。其余仍开放；T18 随时可以砍掉，不影响主线。
+T01–T14 已勾选；T01–T13 已合并到上游，T14 尚未合并。其余仍开放；T18 随时可以砍掉，不影响主线。
 
 ### 阶段对照
 
@@ -513,7 +517,7 @@ T01–T13 已勾选；T01–T10 已合并到上游，T11–T13 尚未合并。�
 | P1           | T01–T04 | ✅ `pnpm typecheck` 通过 —— 本地与 CI 均已验证                       |
 | P2           | T05–T09 | ✅ 单测全绿；T05–T09 各模块语句与行覆盖 100% |
 | P3           | T10–T11 | ✅ 一条必然失败的命令产出 `E-0001` —— 已在临时知识库上端到端验证；99% 门槛现在由 `pnpm test` 执行 |
-| P4           | T12–T14 | 重复的失败被自动注入，模型不再重新诊断 —— T12（通知与上限）与 T13（四个注入点）已完成，T14 待做 |
+| P4           | T12–T14 | ✅ 重复的失败被自动注入，模型不再重新诊断 —— T12（通知与上限）、T13（四个注入点）与 T14（解决检测）已完成；在真实会话里看到模型不再重新诊断要等 T17 |
 | P5           | T15     | 模型可调 `err_lookup` 与 `err_record`                                 |
 | P6           | T16–T17 | `--dump-config` 可见该条目；云端与本地报错各记一条                    |
 | P7（可选）   | T18     | 导出文件可读                                                          |
@@ -542,7 +546,7 @@ T01–T13 已勾选；T01–T10 已合并到上游，T11–T13 尚未合并。�
 | ☑ T11 | 接前两个钩子               | `agent/error`、`tools/result` 监听器                                         | 一条必然失败的命令产出 `E-0001`                                    |
 | ☑ T12 | 生成通知                   | `src/inject.ts` —— 模板、上限、去重                                          | 上限成立；source 形状与 summary 长度精确                           |
 | ☑ T13 | 接四个注入点               | `tools/post-execute`、`agent/pre-step`、`agent/session-start`、system prompt | 重复的失败被自动注入，模型不再重新诊断                             |
-| ☐ T14 | 解决检测                   | `src/resolve-detect.ts`                                                      | `fixed` 条目提示一次后静默                                         |
+| ☑ T14 | 解决检测                   | `src/resolve-detect.ts`                                                      | `fixed` 条目提示一次后静默                                         |
 | ☐ T15 | 五个工具                   | `src/tools.ts`                                                               | 模型可调 `err_lookup` 与 `err_record`                              |
 | ☐ T16 | 监听 `agent/request-error` | 监听器，以及 LLM 失败分类                                                    | 返回值与下游结果对象同一                                           |
 | ☐ T17 | 装进 web profile           | `dsh plugin --profile web add .`                                             | `--dump-config` 可见该条目；云端与本地报错各记一条                 |

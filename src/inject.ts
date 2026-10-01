@@ -12,6 +12,8 @@
 //   doubted   … | fix: … This fix failed here last time; verify before applying.
 //   no fix    [errkb] E-0007 seen before (5 hits), no fix recorded yet.
 //   miss      [errkb] recorded as E-0011 (no fix yet).
+//   ask-fix   [errkb] E-0011 looks resolved. State the fix in one sentence so
+//             it can be reused. (T14, src/resolve-detect.ts)
 //
 // The hit wording answers docs/discussions.md §1.2: it orders the work ("try
 // this first") instead of forbidding any ("do not re-diagnose"), so it does not
@@ -42,6 +44,7 @@ import {
 } from "@deepseek-ai/dsh-llm";
 import type { MessageSourceMap } from "@deepseek-ai/dsh-llm";
 import type { Hit } from "./match";
+import { askFixText } from "./resolve-detect";
 
 /** The plugin name every notice source carries; matches `name` in index.ts. */
 export const PLUGIN_NAME = "err-kb";
@@ -81,7 +84,14 @@ export const WORDING = {
 export type TrustLevel = "trusted" | "doubted" | "suppressed";
 
 /** What a notice says, which also names its wording. */
-export type NoticeKind = "hit" | "near" | "doubted" | "no-fix" | "miss";
+export type NoticeKind =
+  | "hit"
+  | "near"
+  | "doubted"
+  | "no-fix"
+  | "miss"
+  /** The one-shot request for the fix of an entry that looks resolved (T14). */
+  | "ask-fix";
 
 /** The message source of a notice: dsh-llm's plugin source, `notice` form. */
 export type NoticeSource = MessageSourceMap["plugin"] & {
@@ -590,6 +600,21 @@ export class Injector {
     if (!this.caps.tryEmit(id, entry.status === "fixed")) return undefined;
     if (carriesFix) this.trust.injected(id, entry.fix, this.scope);
     return notice(id, noticeText(event, level));
+  }
+
+  /**
+   * Offer the one-shot fix prompt for `id`, which looks resolved (T14). It
+   * spends the step and turn budgets like any notice. Its per-ID budget is
+   * its own, not the entry's: the prompt is a different message, asked once
+   * by construction, and an entry whose "no fix recorded yet" notices used up
+   * its two would otherwise never be asked.
+   *
+   * @returns the notice, or undefined when `inject` is off or a cap refuses.
+   */
+  ask(id: string): Notice | undefined {
+    if (this.mode === "off" || !this.caps.tryEmit(`${id}\0ask`))
+      return undefined;
+    return notice(id, { kind: "ask-fix", text: hardClip(askFixText(id)) });
   }
 }
 

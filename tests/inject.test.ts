@@ -526,6 +526,32 @@ describe("Injector", () => {
     });
   });
 
+  it("ask(): the one-shot fix prompt, under the step and turn caps (T14)", () => {
+    const injector = new Injector({ caps: new CapTracker() });
+    const asked = injector.ask("E-0011");
+    expect(asked).toEqual({
+      id: "E-0011",
+      kind: "ask-fix",
+      text: "[errkb] E-0011 looks resolved. State the fix in one sentence so it can be reused.",
+      source: noticeSource(asked?.text as string),
+    });
+    // One notice per step.
+    expect(injector.ask("E-0012")).toBeUndefined();
+    expect(new Injector({ mode: "off" }).ask("E-0011")).toBeUndefined();
+  });
+
+  it("ask() has its own per-ID budget, apart from the entry's notices", () => {
+    const injector = new Injector();
+    const noFix = hit("E-0007", { fix: "" });
+    for (let i = 0; i < 2; i++) {
+      injector.beginTurn();
+      expect(injector.offer(noFix)?.kind).toBe("no-fix");
+    }
+    injector.beginTurn();
+    expect(injector.offer(noFix)).toBeUndefined();
+    expect(injector.ask("E-0007")?.kind).toBe("ask-fix");
+  });
+
   it("says nothing at all when inject is off", () => {
     const injector = new Injector({ mode: "off" });
     expect(injector.offer(hit())).toBeUndefined();

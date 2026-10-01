@@ -14,11 +14,13 @@ import {
   NOTICE_MAX_CHARS,
   SYSTEM_PROMPT_HINT,
   WORDING,
+  fixSig,
   memoryTrustStore,
   withinCaps,
 } from "../src/inject";
 import type { CapLimits, TrustStore } from "../src/inject";
 import { filesIn } from "../src/paths";
+import { askFixText } from "../src/resolve-detect";
 import {
   DEFAULT_INJECTION_OPTIONS,
   MAX_PENDING,
@@ -278,18 +280,20 @@ describe("registration", () => {
 });
 
 describe("injectionOptions", () => {
-  it("maps the three settings, defaults first", () => {
+  it("maps the four settings, defaults first", () => {
     expect(injectionOptions(Config({}))).toEqual(DEFAULT_INJECTION_OPTIONS);
     expect(
       injectionOptions(
         Config({
           inject: "always",
+          captureFix: "off",
           sessionDigest: "index",
           systemPromptHint: false,
         }),
       ),
     ).toEqual({
       inject: "always",
+      captureFix: "off",
       sessionDigest: "index",
       systemPromptHint: false,
     });
@@ -297,8 +301,14 @@ describe("injectionOptions", () => {
 
   it("a value outside the documented set falls back to the default", () => {
     expect(
-      injectionOptions(Config({ inject: "loud", sessionDigest: "all" })),
-    ).toMatchObject({ inject: "hit-only", sessionDigest: "counts" });
+      injectionOptions(
+        Config({ inject: "loud", captureFix: "always", sessionDigest: "all" }),
+      ),
+    ).toMatchObject({
+      inject: "hit-only",
+      captureFix: "prompt-once",
+      sessionDigest: "counts",
+    });
   });
 });
 
@@ -1085,5 +1095,313 @@ describe("per-session state", () => {
       NOTICE_MAX_CHARS,
     );
     expect(withinCaps(notice as string)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Resolution detection (T14)
+
+describe("resolution detection (T14)", () => {
+  const a = agent();
+  const shell = (command = "pnpm tsc") => exec("shell", { command }, a);
+  const passed = ok("built\n[exit code: 0]");
+
+  /** Let queued resolution steps, and the reads they queue, finish. */
+  async function flush() {
+    for (let i = 0; i < 4; i++) {
+      await settled(filesIn(dir).errors);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  /** A tool call that succeeds, through tools/result only, as the host emits it. */
+  async function succeed(fake: Fake, e: Readonly<ToolExecution>) {
+    await call(fake, e, passed);
+    await flush();
+  }
+
+  it("a new entry that resolves is asked for its fix once, on the next step", async () => {
+    const fake = applied();
+    await fake.preStep(a, 1, 1);
+    await call(fake, shell(), ok(TSC_A));
+    await succeed(fake, shell());
+    expect(entered(await fake.preStep(a, 1, 2))).toEqual([
+      askFixText("E-0001"),
+    ]);
+    expect(askFixText("E-0001")).toBe(
+      "[errkb] E-0001 looks resolved. State the fix in one sentence so it can be reused.",
+    );
+    // It fails and resolves again: never asked twice in a session.
+    await call(fake, shell(), ok(TSC_B));
+    await succeed(fake, shell());
+    expect(entered(await fake.preStep(a, 1, 3))).toEqual([]);
+    expect(entered(await fake.preStep(a, 2, 1))).toEqual([]);
+  });
+
+  it("the prompt is a plugin notice, inside the caps", async () => {
+    const fake = applied();
+    await call(fake, shell(), ok(TSC_A));
+    await succeed(fake, shell());
+    const decision = await fake.preStep(a, 1, 1);
+    expect(decision.kind === "enter" && decision.messages[0]).toMatchObject({
+      role: "user",
+      source: { kind: "plugin", plugin: "err-kb", form: "notice" },
+    });
+    expect(withinCaps(entered(decision)[0] as string)).toBe(true);
+  });
+
+  it("an entry that has a fix is not asked", async () => {
+    const fake = applied();
+    await call(fake, shell(), ok(TSC_A));
+    await edit("E-0001", { fix: FIX });
+    await call(fake, shell(), ok(TSC_B));
+    await succeed(fake, shell());
+    expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
+  });
+
+  it("captureFix: 'off' never asks", async () => {
+    const fake = applied({ captureFix: "off" });
+    await call(fake, shell(), ok(TSC_A));
+    await succeed(fake, shell());
+    expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
+  });
+
+  it("inject: 'off' never asks either", async () => {
+    const fake = applied({ inject: "off" });
+    await call(fake, shell(), ok(TSC_A));
+    await succeed(fake, shell());
+    expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
+  });
+
+  it("a wontfix entry is not asked", async () => {
+    const fake = applied();
+    await call(fake, shell(), ok(TSC_A));
+    await edit("E-0001", { status: "wontfix" });
+    await call(fake, shell(), ok(TSC_B));
+    await succeed(fake, shell());
+    expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
+  });
+
+  it("another command, or a call without an agent, resolves nothing", async () => {
+    const fake = applied();
+    await call(fake, shell(), ok(TSC_A));
+    await succeed(fake, shell("pnpm test"));
+    await succeed(fake, exec("shell", { command: "pnpm tsc" }, null));
+    expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
+    await succeed(fake, shell());
+    expect(entered(await fake.preStep(a, 1, 2))).toEqual([
+      askFixText("E-0001"),
+    ]);
+  });
+
+  it("a tool failure resolves on the tool's next success", async () => {
+    const fake = applied();
+    await call(fake, exec("fetch", {}, a), failed("ECONNREFUSED 10.0.0.1"));
+    await succeed(fake, exec("fetch", {}, a));
+    expect(entered(await fake.preStep(a, 1, 1))).toEqual([
+      askFixText("E-0001"),
+    ]);
+  });
+
+  describe("the window: the rest of the turn plus the next one", () => {
+    it("a success in the next turn resolves", async () => {
+      const fake = applied();
+      await fake.preStep(a, 1, 1);
+      await call(fake, shell(), ok(TSC_A));
+      await fake.preStep(a, 2, 1);
+      await succeed(fake, shell());
+      expect(entered(await fake.preStep(a, 2, 2))).toEqual([
+        askFixText("E-0001"),
+      ]);
+    });
+
+    it("a success two turns later does not", async () => {
+      const fake = applied();
+      await fake.preStep(a, 1, 1);
+      await call(fake, shell(), ok(TSC_A));
+      await fake.preStep(a, 2, 1);
+      await fake.preStep(a, 3, 1);
+      await succeed(fake, shell());
+      expect(entered(await fake.preStep(a, 3, 2))).toEqual([]);
+    });
+
+    it("a new session lifecycle forgets the watches", async () => {
+      const fake = applied();
+      await call(fake, shell(), ok(TSC_A));
+      await fake.sessionStart(a, "clear");
+      await succeed(fake, shell());
+      expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
+    });
+  });
+
+  it("a recurrence cancels the resolution its success would have made", async () => {
+    const fake = applied();
+    // The same entry from two commands: TS2307 names its code, so the
+    // command does not split it.
+    await call(fake, shell("pnpm tsc"), ok(TSC_A));
+    await call(fake, shell("npx tsc"), ok(TSC_B));
+    const document = await createStore(filesIn(dir)).read();
+    expect(document.blocks.map((b) => [b.entry.id, b.entry.hits])).toEqual([
+      ["E-0001", 2],
+    ]);
+    await succeed(fake, shell("pnpm tsc"));
+    expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
+    await succeed(fake, shell("npx tsc"));
+    expect(entered(await fake.preStep(a, 1, 2))).toEqual([
+      askFixText("E-0001"),
+    ]);
+  });
+
+  it("a prompt the step cap refuses rides a later step", async () => {
+    const { fake } = wired();
+    // A known turn error, and a tool entry that resolves: two notices for
+    // one step.
+    const turnError = () =>
+      fake.emit("agent/error", {
+        agent: a,
+        error: Object.assign(new Error("context window exceeded"), {
+          code: "CONTEXT_OVERFLOW",
+        }),
+      });
+    turnError();
+    await settled(filesIn(dir).errors);
+    await edit("E-0001", { fix: "lower maxTokens" });
+    turnError();
+    await call(fake, shell(), ok(TSC_A));
+    await succeed(fake, shell());
+    const first = entered(await fake.preStep(a, 1, 1));
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatch(/^\[errkb\] E-0001 known/);
+    expect(entered(await fake.preStep(a, 1, 2))).toEqual([
+      askFixText("E-0002"),
+    ]);
+  });
+
+  it("a prompt still waiting when its window closes is dropped unsaid", async () => {
+    const { fake } = wired({}, { caps: { perTurn: 0 } });
+    await fake.preStep(a, 1, 1);
+    await call(fake, shell(), ok(TSC_A));
+    await succeed(fake, shell());
+    // Refused by the caps: kept, while the window is open.
+    expect(entered(await fake.preStep(a, 1, 2))).toEqual([]);
+    expect(entered(await fake.preStep(a, 2, 1))).toEqual([]);
+    // Two turns on, it is dropped rather than offered again.
+    expect(entered(await fake.preStep(a, 3, 1))).toEqual([]);
+  });
+
+  it("a resolved fix counts as a success, and lifts its suppression", async () => {
+    const trust = memoryTrustStore({
+      entries: {
+        "E-0001": {
+          injected: 2,
+          recurredAfterInject: 2,
+          succeeded: 0,
+          fixSig: fixSig(FIX),
+        },
+      },
+    });
+    const { fake, injection } = wired({}, { trust });
+    await call(fake, shell(), ok(TSC_A));
+    await edit("E-0001", { fix: FIX });
+    expect(injection.trust.level("E-0001", FIX)).toBe("suppressed");
+    // Suppressed: the hit is silent, but still recorded and watched.
+    await fake.preStep(a, 1, 1);
+    expect(contexts(await call(fake, shell(), ok(TSC_B)))).toEqual([]);
+    await succeed(fake, shell());
+    expect(injection.trust.snapshot().entries["E-0001"]?.succeeded).toBe(1);
+    expect(injection.trust.level("E-0001", FIX)).toBe("doubted");
+    // An entry with a fix is not asked; the next hit speaks again.
+    expect(entered(await fake.preStep(a, 1, 2))).toEqual([]);
+    const [notice] = contexts(await call(fake, shell(), ok(TSC_A)));
+    expect(notice).toContain(WORDING.doubted);
+  });
+
+  it("recordFix: the entry is fixed, speaks once, then stays silent", async () => {
+    const { fake, recorder } = wired();
+    await fake.preStep(a, 1, 1);
+    await call(fake, shell(), ok(TSC_A));
+    expect(await recorder.recordFix("E-0001", FIX)).toMatchObject({
+      kind: "fixed",
+      entry: { id: "E-0001", status: "fixed", fix: FIX },
+    });
+    await fake.preStep(a, 1, 2);
+    const [notice] = contexts(await call(fake, shell(), ok(TSC_B)));
+    expect(notice).toContain(`fix: ${FIX}`);
+    await fake.preStep(a, 2, 1);
+    expect(contexts(await call(fake, shell(), ok(TSC_A)))).toEqual([]);
+    await fake.preStep(a, 3, 1);
+    expect(contexts(await call(fake, shell(), ok(TSC_A)))).toEqual([]);
+  });
+
+  describe("guarded: nothing throws", () => {
+    it("a malformed result is counted, and the session keeps working", async () => {
+      const { fake, recorder } = wired();
+      const malformed = {
+        isError: true,
+      } as unknown as Readonly<ToolExecutionResult>;
+      expect(() =>
+        fake.emit("tools/result", exec("t", {}, a), malformed),
+      ).not.toThrow();
+      expect(recorder.stats.failures).toBeGreaterThan(0);
+      await call(fake, shell(), ok(TSC_A));
+      await succeed(fake, shell());
+      expect(entered(await fake.preStep(a, 1, 1))).toEqual([
+        askFixText("E-0001"),
+      ]);
+    });
+
+    it("a read that fails while resolving is counted, and asks nothing", async () => {
+      const real = createRecorder({
+        files: filesIn(dir),
+        logger: { warn: () => undefined },
+      });
+      let failures = 0;
+      const recorder: Recorder = {
+        ...real,
+        entries: () => Promise.reject(new Error("read broke")),
+        fail: () => {
+          failures++;
+        },
+      };
+      const { fake } = wired({}, { recorder });
+      await call(fake, shell(), ok(TSC_A));
+      await succeed(fake, shell());
+      expect(failures).toBe(1);
+      expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
+    });
+
+    it("an unreadable knowledge base or a vanished entry asks nothing", async () => {
+      const real = createRecorder({
+        files: filesIn(dir),
+        logger: { warn: () => undefined },
+      });
+      let reads = 0;
+      const recorder: Recorder = {
+        ...real,
+        entries: async () => (reads++ === 0 ? undefined : []),
+      };
+      const { fake } = wired({}, { recorder });
+      await call(fake, shell(), ok(TSC_A));
+      await succeed(fake, shell());
+      await call(fake, shell(), ok(TSC_B));
+      await succeed(fake, shell());
+      expect(reads).toBe(2);
+      expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
+    });
+
+    it("a write that does not name an entry watches nothing", async () => {
+      const real = createRecorder({
+        files: filesIn(dir),
+        logger: { warn: () => undefined },
+      });
+      const recorder: Recorder = {
+        ...real,
+        toolResult: () => Promise.resolve({ kind: "timeout" }),
+      };
+      const { fake } = wired({}, { recorder });
+      await call(fake, shell(), ok(TSC_A));
+      await succeed(fake, shell());
+      expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
+    });
   });
 });

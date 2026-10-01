@@ -76,6 +76,8 @@ import type {
   TrustStore,
 } from "./inject";
 import { DEFAULT_MATCH_OPTIONS, indexEntries, match } from "./match";
+import { ResolutionTracker, callOutcome } from "./resolve-detect";
+import type { CaptureFixMode } from "./resolve-detect";
 import type { Hit, IndexedEntry, MatchOptions, MatchResult } from "./match";
 import type { KbFiles } from "./paths";
 import {
@@ -168,6 +170,17 @@ export type RecordOutcome =
 /** An outcome of a write that did not fail. */
 type Written = Exclude<RecordOutcome, { kind: "failed" }>;
 
+/** What one recordFix() led to. */
+export type FixOutcome =
+  /** The entry now carries the fix, redacted, and is `fixed`. */
+  | { kind: "fixed"; entry: Entry }
+  /** No entry has that ID. */
+  | { kind: "unknown" }
+  /** The lock stayed busy for the whole write budget: nothing written. */
+  | { kind: "timeout" }
+  /** The write failed; the failure was counted and maybe logged. */
+  | { kind: "failed" };
+
 /** Running totals since the recorder was created. */
 export interface RecorderStats {
   appended: number;
@@ -216,6 +229,12 @@ export interface Recorder {
   lookup(input: CaptureInput): Promise<MatchResult | undefined>;
   /** The indexed entries, read like lookup(); undefined when the read failed. */
   entries(): Promise<IndexedEntry[] | undefined>;
+  /**
+   * Write a fix into an entry and mark it `fixed` (T14), for `err_record`
+   * (T15) to call. Off the turn and serialized with the other writes, under
+   * the same budget and retries; the store redacts the fix. Never rejects.
+   */
+  recordFix(id: string, fix: string): Promise<FixOutcome>;
   /** Count a failure and log it, at most once a minute; never throws. */
   fail(error: unknown): void;
   /** Settles once every write queued so far has finished. */
@@ -336,6 +355,9 @@ export function toolInput(
 
 // ---------------------------------------------------------------------------
 // The recorder
+
+/** What budgeted() returns when the write budget ran out. */
+const TIMEOUT = Symbol("timeout");
 
 /**
  * True for a failure a retry cannot fix: a document that does not parse stays
@@ -470,8 +492,14 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     return { kind: "appended", id };
   }
 
-  /** Write one classified error within the time budget, with retries. */
-  async function persist(classified: Classified): Promise<Written> {
+  /**
+   * Run one write within the time budget, with retries.
+   *
+   * @returns what `write` returned, or `TIMEOUT` when the budget ran out.
+   */
+  async function budgeted<T>(
+    write: (store: ErrorStore) => Promise<T>,
+  ): Promise<T | typeof TIMEOUT> {
     const deadline = now() + WRITE_TIMEOUT_MS;
     for (let attempt = 0; ; attempt++) {
       const store = createStore(
@@ -481,15 +509,21 @@ export function createRecorder(deps: RecorderDeps): Recorder {
         clock,
       );
       try {
-        return await once(store, classified);
+        return await write(store);
       } catch (error) {
         cache = undefined;
-        if (error instanceof LockTimeoutError) return { kind: "timeout" };
+        if (error instanceof LockTimeoutError) return TIMEOUT;
         if (final(error) || attempt >= WRITE_RETRIES) throw error;
         await clock.sleep(RETRY_DELAY_MS);
-        if (now() >= deadline) return { kind: "timeout" };
+        if (now() >= deadline) return TIMEOUT;
       }
     }
+  }
+
+  /** Write one classified error within the time budget, with retries. */
+  async function persist(classified: Classified): Promise<Written> {
+    const outcome = await budgeted((store) => once(store, classified));
+    return outcome === TIMEOUT ? { kind: "timeout" } : outcome;
   }
 
   function tally(outcome: Written): void {
@@ -577,6 +611,25 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     },
 
     entries: read,
+
+    recordFix(id, fix) {
+      return queued(key, async (): Promise<FixOutcome> => {
+        try {
+          const entry = await budgeted((store) =>
+            store.update(id, { fix, status: "fixed" }),
+          );
+          cache = undefined;
+          if (entry === TIMEOUT) return { kind: "timeout" };
+          return entry === undefined
+            ? { kind: "unknown" }
+            : { kind: "fixed", entry };
+        } catch (error) {
+          fail(error);
+          return { kind: "failed" };
+        }
+      });
+    },
+
     fail,
     idle: () => settled(key),
     outcomes,
@@ -645,6 +698,17 @@ export function createRecorder(deps: RecorderDeps): Recorder {
 // Fix trust is one FixTrust per plugin instance over an injectable TrustStore
 // (memory until state.json exists), scoped per session, so a recurrence is
 // counted only within the session and turn that injected the fix.
+//
+// Resolution detection (T14) rides `tools/result`. Each session keeps a
+// ResolutionTracker (src/resolve-detect.ts, where the rule and the window are
+// described), advanced by the same turn boundary as the caps. A failed call
+// is watched once its write names the entry; a successful one is checked
+// against the watches. Both are handled in arrival order on a per-session
+// chain, so a success is never checked before the failure in front of it has
+// been written. A resolved entry feeds FixTrust a success; one without a fix
+// queues the one-shot `captureFix` prompt for the next pre-step, through the
+// same pending list as a dead turn's notice. recordFix() on the recorder is
+// the write `err_record` (T15) will call.
 
 /** Pending pre-step notices kept per session; the oldest goes first. */
 export const MAX_PENDING = 4;
@@ -652,12 +716,14 @@ export const MAX_PENDING = 4;
 /** Injection settings; every one has a default. */
 export interface InjectionOptions {
   inject: InjectMode;
+  captureFix: CaptureFixMode;
   sessionDigest: SessionDigestMode;
   systemPromptHint: boolean;
 }
 
 export const DEFAULT_INJECTION_OPTIONS: InjectionOptions = {
   inject: "hit-only",
+  captureFix: "prompt-once",
   sessionDigest: "counts",
   systemPromptHint: true,
 };
@@ -690,7 +756,10 @@ export interface Injection {
   readonly trust: FixTrust;
   /** `agent/error`: record, and queue the notice for the next step. */
   agentError(payload: AgentErrorPayload): void;
-  /** `tools/result`: record, and route a miss's new ID to the next step. */
+  /**
+   * `tools/result`: record, route a miss's new ID to the next step, and feed
+   * resolution detection (T14).
+   */
   toolResult(
     exec: Readonly<ToolExecution>,
     result: Readonly<ToolExecutionResult>,
@@ -722,12 +791,23 @@ interface Pending {
   /** The write settled; `id` is set when it appended an entry. */
   written: boolean;
   id?: string;
+  /** The fix prompt for this entry, which looks resolved (T14). */
+  ask?: string;
+  /** The resolver's turn the prompt was queued in; it lapses with the window. */
+  turn?: number;
 }
 
 interface SessionState {
   injector: Injector;
+  resolver: ResolutionTracker;
   turn: number | undefined;
   pending: Pending[];
+  /**
+   * Resolution events, handled one at a time in arrival order: a failure
+   * waits for its write to name the entry before a later success is checked
+   * against it. Never rejects.
+   */
+  resolving: Promise<void>;
 }
 
 /** A user message carrying `text`, attributed to the plugin. */
@@ -769,8 +849,10 @@ export function createInjection(deps: InjectionDeps): Injection {
         trust,
         scope: session,
       }),
+      resolver: new ResolutionTracker(),
       turn: undefined,
       pending: [],
+      resolving: Promise.resolve(),
     };
     sessions.delete(session);
     sessions.set(session, state);
@@ -838,6 +920,77 @@ export function createInjection(deps: InjectionDeps): Injection {
     }
   }
 
+  /** Queue a resolution step behind the session's earlier ones. */
+  function resolving(state: SessionState, step: () => Promise<void>): void {
+    state.resolving = state.resolving.then(() => guard(step)).then(() => {});
+  }
+
+  /**
+   * Feed one tool outcome to resolution detection (T14). A failure is watched
+   * once its write names the entry; a success resolves what it matches. The
+   * turn is taken now, when the call happened.
+   */
+  function detect(
+    state: SessionState,
+    exec: Readonly<ToolExecution>,
+    result: Readonly<ToolExecutionResult>,
+    write: PendingWrite | undefined,
+  ): void {
+    const input = toolInput(exec, result);
+    const outcome = callOutcome({
+      toolName: exec.name,
+      isError: input.kind === "tool",
+      text: input.kind === "command" ? input.text : "",
+      ...(input.kind === "command" && input.command !== undefined
+        ? { command: input.command }
+        : {}),
+    });
+    const turn = state.resolver.turn;
+    if (!outcome.ok) {
+      if (write === undefined) return;
+      resolving(state, async () => {
+        const written = await write;
+        if (written.kind === "appended" || written.kind === "hit")
+          state.resolver.occurred(written.id, outcome.key, turn);
+      });
+      return;
+    }
+    resolving(state, async () => {
+      for (const id of state.resolver.succeeded(outcome.keys, turn))
+        await resolved(state, id, turn);
+    });
+  }
+
+  /**
+   * `id` looks resolved: its fix earned a success, and an entry without one
+   * gets the one-shot prompt on the next step, under `captureFix:
+   * 'prompt-once'`.
+   */
+  async function resolved(
+    state: SessionState,
+    id: string,
+    turn: number,
+  ): Promise<void> {
+    const index = await recorder.entries();
+    const found = index?.find((indexed) => indexed.entry.id === id);
+    if (found === undefined) return;
+    const { entry, excluded } = found;
+    trust.succeeded(id, entry.fix);
+    if (
+      !injecting ||
+      o.captureFix !== "prompt-once" ||
+      excluded !== undefined ||
+      entry.fix.trim() !== "" ||
+      !state.resolver.ask(id)
+    )
+      return;
+    track(
+      state,
+      { read: Promise.resolve(), miss: false, written: true, ask: id, turn },
+      undefined,
+    );
+  }
+
   /** The first pending notice the caps allow; the rest are dropped. */
   async function drain(state: SessionState): Promise<Notice | undefined> {
     const items = state.pending.slice();
@@ -851,6 +1004,16 @@ export function createInjection(deps: InjectionDeps): Injection {
         kept.push(item);
       } else if (item.id !== undefined) {
         notice ??= state.injector.offer({ kind: "miss", id: item.id });
+      } else if (
+        item.ask !== undefined &&
+        state.resolver.open(item.turn as number)
+      ) {
+        // A prompt the caps refuse now waits for a later step, until the
+        // window it was asked in closes; then it is dropped unsaid.
+        const asked =
+          notice === undefined ? state.injector.ask(item.ask) : undefined;
+        if (asked !== undefined) notice = asked;
+        else kept.push(item);
       }
     }
     state.pending = state.pending.filter(
@@ -904,13 +1067,17 @@ export function createInjection(deps: InjectionDeps): Injection {
       try {
         const write = recorder.toolResult(exec, result);
         const state = awaitingId.get(exec);
-        if (state === undefined) return;
-        awaitingId.delete(exec);
-        track(
-          state,
-          { read: Promise.resolve(), miss: true, written: false },
-          write,
-        );
+        if (state !== undefined) {
+          awaitingId.delete(exec);
+          track(
+            state,
+            { read: Promise.resolve(), miss: true, written: false },
+            write,
+          );
+        }
+        const session = exec.agent?.id;
+        if (session !== undefined)
+          detect(stateFor(session), exec, result, write);
       } catch (error) {
         recorder.fail(error);
       }
@@ -953,6 +1120,7 @@ export function createInjection(deps: InjectionDeps): Injection {
         if (state.turn !== payload.turn) {
           state.turn = payload.turn;
           state.injector.beginTurn();
+          state.resolver.beginTurn();
         }
         state.injector.beginStep();
       } catch (error) {
