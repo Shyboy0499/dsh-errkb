@@ -78,7 +78,7 @@
 | `src/inject.ts` —— 通知生成与硬上限                                      | ⛔ 未开始       |
 | `src/resolve-detect.ts` —— 解决检测                                      | ⛔ 未开始       |
 | `src/tools.ts` —— 五个工具                                               | ⛔ 未开始       |
-| `tests/`                                                                 | ✅ 286 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 58 与 `seeds` 5（T08）、`match` 40（T09）、`capture` 62（T10） |
+| `tests/`                                                                 | ✅ 291 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 58 与 `seeds` 5（T08）、`match` 40（T09）、`capture` 67（T10） |
 | 装进 `web` profile                                                       | ⛔ 未开始       |
 | 发布到 npm                                                               | ⛔ 未开始 —— 还没有 task 覆盖它，见[开发路线图](#开发路线图) |
 
@@ -161,7 +161,7 @@
 2. 否则取第一个匹配 `ERR_[A-Z0-9_]+|E[A-Z]{2,}|[A-Z]\w*Error|error TS\d+` 的行（`ERR`、`ERROR` 这类日志级别词不算）；
 3. 否则取最后一个非空行。
 
-标题行最长 200 字符；来源没给 code 时，标题行里的 code（`ERR_PNPM_…`、`EPERM`、`TS2307`、`ModuleNotFoundError`）记为条目的 `code`；完整文本留作原始样本。对命令而言，harness 自己追加的 `[exit code: N]` 标记不参与选标题行。
+标题行最长 200 字符；来源没给 code 时，标题行里的 code（`ERR_PNPM_…`、`EPERM`、`TS2307`、`ModuleNotFoundError`）记为条目的 `code`；完整文本留作原始样本。对命令而言，harness 自己追加的 `[exit code: N]` 标记不参与选标题行。命令的标题行不含 code 时——无输出的失败只剩 `exit code 1`，测试工具最后一行是 `1 test failed`——由所执行的命令领起标题行（`pnpm test → exit code 1`，取命令首行，截到 120 字符），这样两条不同命令的无输出失败永远不会共用一个编号。
 
 ## 知识库落在哪里
 

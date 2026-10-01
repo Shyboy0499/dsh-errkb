@@ -81,7 +81,7 @@
 | `src/inject.ts` — notice generation and hard caps                         | ⛔ Not started             |
 | `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
 | `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
-| `tests/`                                                                  | ✅ 286 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 58 and `seeds` 5 (T08), `match` 40 (T09), `capture` 62 (T10) |
+| `tests/`                                                                  | ✅ 291 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 58 and `seeds` 5 (T08), `match` 40 (T09), `capture` 67 (T10) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -165,7 +165,7 @@ The listener on `agent/request-error` must `await next()` and return the downstr
 2. otherwise the first line matching `ERR_[A-Z0-9_]+|E[A-Z]{2,}|[A-Z]\w*Error|error TS\d+` (log-level words such as `ERR` and `ERROR` do not count);
 3. otherwise the last non-empty line.
 
-The headline is capped at 200 characters, the code it names (`ERR_PNPM_…`, `EPERM`, `TS2307`, `ModuleNotFoundError`) becomes the entry's `code` when the source gives none, and the full text is kept as the raw sample. For a command, the harness's own `[exit code: N]` marker is left out of the headline.
+The headline is capped at 200 characters, the code it names (`ERR_PNPM_…`, `EPERM`, `TS2307`, `ModuleNotFoundError`) becomes the entry's `code` when the source gives none, and the full text is kept as the raw sample. For a command, the harness's own `[exit code: N]` marker is left out of the headline. When a command's headline names no code — a silent failure reads `exit code 1`, a test runner's last line reads `1 test failed` — the command that ran leads it (`pnpm test → exit code 1`, its first line, cut to 120 characters), so silent failures of two different commands never share an ID.
 
 ## Where the knowledge base lives
 
