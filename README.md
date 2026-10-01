@@ -1,6 +1,6 @@
 # dsh-errkb
 
-![Status](https://img.shields.io/badge/status-P2%20complete-yellow)
+![Status](https://img.shields.io/badge/status-P3%20complete-yellow)
 ![License](https://img.shields.io/github/license/jingchangzhao-gif/dsh-errkb)
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
@@ -10,20 +10,24 @@
 
 `dsh-errkb` is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) plugin that turns the errors a model hits into a numbered, human-editable knowledge base — then pushes the recorded fix back into context *before* the model starts diagnosing.
 
-> **Status: P2 complete.** The design document is written and under review —
+> **Status: P3 complete.** The design document is written and under review —
 > six of the eight decisions in its §17 are still open (Q2 and Q4 are decided) —
 > and the work is broken into [eighteen tasks](#roadmap) across seven milestones.
-> **T01–T10 are done:** the package installs, builds, type checks, lints, formats
-> and tests, CI runs all five on every pull request, and the pure local layer is
-> complete: knowledge-base directory resolution (T05), error normalization and
-> fingerprinting (T06), mandatory redaction (T07), the `ERRORS.md` store (T08)
-> and matching (T09). The capture layer has started: classification and the
-> noise rule (T10) are in place; wiring the first two hooks (T11) is next.
+> **T01–T11 are done:** the package installs, builds, type checks, lints, formats
+> and tests (with the 99% coverage gate enforced), CI runs all five on every pull
+> request, and the pure local layer is complete: knowledge-base directory
+> resolution (T05), error normalization and fingerprinting (T06), mandatory
+> redaction (T07), the `ERRORS.md` store (T08) and matching (T09). The capture
+> layer is wired: classification and the noise rule (T10), and the first two
+> hooks, `agent/error` and `tools/result` (T11).
 >
-> **The plugin still does nothing.** `apply` writes one startup line and calls
-> none of those modules, and it is not installed into any profile yet (that is
-> T17), so there is no behaviour to use. Everything marked "not implemented" below is still a description of the
-> intended path.
+> **The plugin records, and nothing more.** Loaded into a profile, `apply`
+> logs where the knowledge base is and records tool failures, non-zero command
+> exits and turn-level errors into `ERRORS.md`. Nothing is injected into the
+> model's context yet (T12–T14), there are no agent tools (T15), LLM request
+> failures are not captured (T16), and it is not installed into any profile yet
+> (T17). Everything marked "not implemented" below is still a description of
+> the intended path.
 >
 > - Design document: [`docs/设计说明书.md`](docs/设计说明书.md) — 19 sections, Chinese
 > - What the plugin will do: [How it works](#how-it-works)
@@ -69,19 +73,20 @@
 | `package.json`, `tsconfig.json`, `tsdown.config.ts`, `vitest.config.ts`   | ✅ In place (T01–T03)      |
 | `.prettierignore`, `.gitattributes` — format and line-ending policy       | ✅ In place                |
 | `cordis.patch.yml` — bundle patch                                         | ✅ In place (T04)          |
-| `src/index.ts` — plugin entry (`name`, `inject`, `Config`, `apply`)       | ✅ In place (T04), entry only — no behaviour |
+| `src/index.ts` — plugin entry (`name`, `inject`, `Config`, `apply`)       | ✅ In place (T04); `apply` reads the settings and registers the `agent/error` and `tools/result` listeners (T11) |
+| `src/plugin.ts` — the capture pipeline behind those listeners             | ✅ In place (T11), 100% statements and lines |
 | `src/paths.ts` — KB directory resolution                                  | ✅ In place (T05), 100% covered |
-| `src/signature.ts` — normalization and fingerprinting                     | ✅ In place (T06), 100% covered — not called by anything yet |
-| `src/redact.ts`, `src/redact-patterns.ts` — mandatory redaction           | ✅ In place (T07), 100% covered — not called by anything yet |
-| `src/store.ts` — parse, render, append, archive                           | ✅ In place (T08), 100% statements and lines — not called by anything yet |
+| `src/signature.ts` — normalization and fingerprinting                     | ✅ In place (T06), 100% covered — used by capture and matching |
+| `src/redact.ts`, `src/redact-patterns.ts` — mandatory redaction           | ✅ In place (T07), 100% covered — applied by the store on every write |
+| `src/store.ts` — parse, render, append, archive                           | ✅ In place (T08), 100% statements and lines — written by the T11 listeners |
 | `seeds/ERRORS.seed.md` — three curated, redacted seed entries             | ✅ In place (T08) — not copied into any knowledge base yet |
-| `src/match.ts` — exact, fuzzy and fallback matching                       | ✅ In place (T09), 100% statements and lines — not called by anything yet |
+| `src/match.ts` — exact, fuzzy and fallback matching                       | ✅ In place (T09), 100% statements and lines — consulted before every write |
 | `src/state.ts` — `state.json`, `.machine.json`, environment fingerprint   | ⛔ Not started             |
-| `src/capture.ts` — classification, headline extraction and the noise rule | ✅ In place (T10), 100% statements and lines — not called by anything yet |
+| `src/capture.ts` — classification, headline extraction and the noise rule | ✅ In place (T10), 100% statements and lines — called by the T11 listeners |
 | `src/inject.ts` — notice generation and hard caps                         | ⛔ Not started             |
 | `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
 | `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
-| `tests/`                                                                  | ✅ 291 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 58 and `seeds` 5 (T08), `match` 40 (T09), `capture` 67 (T10) |
+| `tests/`                                                                  | ✅ 325 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 58 and `seeds` 5 (T08), `match` 40 (T09), `capture` 67 (T10), `plugin` 34 (T11) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -95,8 +100,10 @@ For a failure you see once, that is fine. For a failure you see every week — a
 
 ## Features
 
-> **Designed, not implemented.** Everything below is specified in the design
-> document and covered by a test plan. None of it runs yet — see
+> **Designed, mostly not implemented.** Everything below is specified in the
+> design document and covered by a test plan. Only recording runs yet: stable
+> IDs, one ID per error and mandatory redaction apply to what the T11 listeners
+> write. Injection, the tools and the ledger do not exist yet — see
 > [What works today](#what-works-today).
 
 | Behaviour                     | Detail                                                                          |
@@ -156,6 +163,8 @@ Not every failure deserves a number. Transient ones are counted and only promote
 | Transient LLM failure                | `agent/request-error`                | `RATE_LIMIT`, `SERVER`, `TIMEOUT`, `TRANSPORT`, `EMPTY_RESPONSE` | ❌ counted only — promoted after `transientThreshold` (default 5) in one session    |
 
 The listener on `agent/request-error` must `await next()` and return the downstream result unchanged. It observes; it never recovers.
+
+**What is wired today (T11).** `src/plugin.ts` holds the listener bodies; `apply` registers two of them. `agent/error` hands its `error` to classification as a turn-level exception. `tools/result` records a failed result (`result.isError`) as a tool failure with `result.error.message` and `result.error.info?.code`; any other result has its text blocks sniffed for `[exit code: N]`, with the command taken from the call's `command`, `cmd` or `script` argument. Each classified error is matched against the entries already in `ERRORS.md`: a hit bumps that entry's hits and last-seen, a miss appends the next ID. A `count-only` error (a transient one below the threshold, or one after its promotion) only bumps an entry that already has its signature, and writes nothing otherwise. Transient counts are kept per session, by `Agent.id`; a payload with no agent counts under one plugin-wide counter. `agent/request-error` is not registered yet (T16), so no LLM failure reaches the pipeline.
 
 **Promotion happens once.** A transient error's count is kept per session and per signature, and it takes an ID on the occurrence that *reaches* `transientThreshold` — not on every occurrence after it. With a source left out of `capture`, nothing is produced for it at all, not even a count.
 
@@ -413,6 +422,8 @@ The plugin's own mistakes must never become the agent's problem. Each risk below
 | Secrets or privacy leaking into a public repo     | Mandatory redaction before storage; with `share: 'public'` even the `requestId` is dropped               |
 | Unbounded growth slowing the context              | `maxEntries` archiving, 400-character entries, injection de-duplication and the per-step/turn/session caps |
 
+**How much of this runs today (T11).** The listeners are wrapped as above: a failure is counted, logged at most once a minute through the plugin's logger, and never thrown. Failure counts are held in memory until `state.json` arrives with `src/state.ts`. Writes happen off the turn, one at a time per knowledge base, each with a 500 ms budget for up to 3 retries and the lock wait; a lock still busy when the budget runs out skips the record silently. A write that already holds the lock is not cut off midway, since the store cannot abandon one safely. A document that does not parse is not retried and stops recording until it is repaired. The redaction, lock, atomic-write and corrupt-document rows are the store's (T07–T08) and apply to every write.
+
 **What it will never do:** take over retries, throw into a turn, rewrite a corrupt document, block a turn on a write, or send anything off the machine.
 
 ## Known limitations
@@ -465,13 +476,13 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 | ----- | --------------------------------------------------------------------------------------- |
 | ✅    | T01–T09 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), paths, signature, redact, store and match |
 | ✅    | T10 — classification, headline extraction and the transient-noise rule                  |
-| 🔜    | T11 — the first two hooks: `agent/error` and `tools/result`                             |
+| ✅    | T11 — the first two hooks: `agent/error` and `tools/result`                             |
 | 🔜    | T12–T14 — the injection layer: notice text, four injection points, resolution detection |
 | 🔜    | T15 — the five agent tools                                                              |
 | 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
 | 🔜    | T18 — optional: Obsidian export                                                         |
 
-T01–T10 are checked off. T01–T05 are merged upstream; T06–T10 are not yet. The rest are open; T18 can be dropped at any point without touching the main line.
+T01–T11 are checked off. T01–T10 are merged upstream; T11 is not yet. The rest are open; T18 can be dropped at any point without touching the main line.
 
 ### Milestone mapping
 
@@ -481,8 +492,8 @@ The design document plans in phases P0–P7 (§15); the task list numbers the sa
 | -------------- | ------- | ---------------------------------------------------------------------------- |
 | P0             | —       | The design document is written and **you have answered §17** — two of eight answered (Q2, Q4) |
 | P1             | T01–T04 | ✅ `pnpm typecheck` passes — verified locally and in CI                       |
-| P2             | T05–T09 | ✅ Unit tests green; every T05–T09 module at 100% statements and lines (the global gate also counts `src/index.ts`, which T11 wires up) |
-| P3             | T10–T11 | A guaranteed-failing command produces `E-0001` — T10 done (100% statements and lines), T11 open |
+| P2             | T05–T09 | ✅ Unit tests green; every T05–T09 module at 100% statements and lines |
+| P3             | T10–T11 | ✅ A guaranteed-failing command produces `E-0001` — shown end to end against a temporary knowledge base; the 99% gate now runs in `pnpm test` |
 | P4             | T12–T14 | A repeated failure is injected and the model stops re-diagnosing              |
 | P5             | T15     | The model can call `err_lookup` and `err_record`                             |
 | P6             | T16–T17 | `--dump-config` shows the entry; one cloud and one local error are each recorded |
@@ -509,7 +520,7 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 | ☑ T08 | Store the document                     | `src/store.ts` — parse, render, append, archive, lock, atomic write          | Round-trip identity; hand-edited fixes read back; 50 concurrent records yield 50 unique IDs          |
 | ☑ T09 | Match                                  | `src/match.ts` — exact, fuzzy, code fallback, mis-flag fallback              | Boundary values 0.71 / 0.72 / 0.73 behave as specified                                               |
 | ☑ T10 | Classify, and suppress noise           | `src/capture.ts`                                                             | Transient errors get no ID until the threshold; capture off writes nothing                           |
-| ☐ T11 | Wire the first two hooks               | `agent/error`, `tools/result` listeners                                      | A guaranteed-failing command produces `E-0001`                                                       |
+| ☑ T11 | Wire the first two hooks               | `agent/error`, `tools/result` listeners                                      | A guaranteed-failing command produces `E-0001`                                                       |
 | ☐ T12 | Generate notices                       | `src/inject.ts` — template, caps, dedup                                      | Caps hold; source shape and summary length are exact                                                 |
 | ☐ T13 | Wire the four injection points         | `tools/post-execute`, `agent/pre-step`, `agent/session-start`, system prompt | A repeated failure is injected, and the model stops re-diagnosing                                    |
 | ☐ T14 | Detect resolution                      | `src/resolve-detect.ts`                                                      | A `fixed` entry goes silent after one notice                                                         |
@@ -525,7 +536,7 @@ The skeleton exists (T01–T04), so all of these work. `build`, `typecheck`, `li
 ```sh
 pnpm install
 pnpm build            # tsdown → lib/
-pnpm test             # vitest
+pnpm test             # vitest with coverage; fails under 99% statements or lines
 pnpm typecheck        # tsc --noEmit
 pnpm lint             # oxlint
 pnpm format           # prettier --write .
@@ -534,7 +545,7 @@ pnpm format:check     # prettier --check .  (what CI runs)
 
 ### Test plan
 
-The test plan is §14 of the design document. Coverage gate: statements and lines ≥ 99. Seven groups are planned:
+The test plan is §14 of the design document. Coverage gate: statements and lines ≥ 99, enforced by `pnpm test` since T11. Seven groups are planned:
 
 1. `signature` — path, line, PID, timestamp and UUID changes keep the signature stable; different errors differ; empty, ANSI-only and very long strings do not crash.
 2. `match` — exact hits, Jaccard boundaries at 0.71 / 0.72 / 0.73, short-message code fallback, mis-flagged entries never injected.
@@ -542,7 +553,7 @@ The test plan is §14 of the design document. Coverage gate: statements and line
 4. `store` — write/parse round-trip identity; hand-edited fixes read back; a corrupt file takes the save-aside + append-only path; the archive threshold fires; IDs increase monotonically; **50 concurrent records yield 50 unique IDs and a still-parseable document**.
 5. `capture` — four payload classes classified correctly; transient rate limits uncounted until the threshold; every capture toggle off means zero writes.
 6. `inject` — text length caps, ≤ 1 notice per step, ≤ 3 per turn, source shape `{kind:'plugin',plugin:'err-kb',form:'notice',summary}` with `summary` ≤ 120 characters.
-7. `plugin` — a fake context confirms listeners are registered, exceptions are swallowed, and the `agent/request-error` return value is identical (object identity asserted) to the downstream result.
+7. `plugin` — a fake context confirms listeners are registered, exceptions are swallowed, and the `agent/request-error` return value is identical (object identity asserted) to the downstream result. The first two parts are in `tests/plugin.test.ts` (T11), along with a failing command producing `E-0001` and a repeat bumping it; the `agent/request-error` part arrives with T16.
 
 The concurrency test in group 4 is the one that matters most, because it is the failure mode that would corrupt the only authoritative file.
 

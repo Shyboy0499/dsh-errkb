@@ -1,9 +1,12 @@
-// dsh-errkb plugin entry. This file declares the plugin's surface and nothing
-// else: capture, fingerprinting, matching and injection all arrive in T10-T16,
-// and every registration point below is marked with the task that owns it.
+// dsh-errkb plugin entry. This file declares the plugin's surface and wires it:
+// apply() resolves the knowledge base, binds a recorder to it and registers the
+// two capture listeners (T11). The pipeline itself lives in src/plugin.ts;
+// every registration point still to come is marked with the task that owns it.
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 import { defaultProbe, formatKbLog, resolveKbDir } from "./paths";
+import { createRecorder, registerListeners } from "./plugin";
+import type { RecorderOptions } from "./plugin";
 
 // The plugin's runtime name, matching `id` in cordis.patch.yml. The installed
 // harness plugins follow the same rule: dsh-spill-policy exports "spill-policy",
@@ -16,14 +19,16 @@ export const name = "err-kb";
 // backs the standing section registered in T13.
 export const inject = ["tools", "systemPrompt"];
 
-// Declared, not consumed - apply() reads no setting yet. Every default mirrors
-// the Settings table in README.md item for item. The documented value sets
-// (captureFix: prompt-once|off, inject: hit-only|always|off, sessionDigest:
-// off|counts|index, share: public|private) are not enforced yet; validation
-// tightens when the settings are actually read in T10-T16. `labels` is the
-// exception: it is new, so it starts out as the union it documents (§17 Q2).
-// The store reads both label sets whatever this says; it only decides the
-// language of blocks it writes.
+// Every default mirrors the Settings table in README.md item for item. T11
+// reads the capture and store settings (see recorderOptions); captureFix,
+// inject, sessionDigest, systemPromptHint, providers and exportDir are still
+// only declared. The documented value sets (captureFix: prompt-once|off,
+// inject: hit-only|always|off, sessionDigest: off|counts|index) are not
+// enforced yet; validation tightens when those settings are read in T12-T16.
+// `share` is read, and anything but "private" counts as "public", the safer
+// of the two. `labels` is the exception: it is new, so it starts out as the
+// union it documents (§17 Q2). The store reads both label sets whatever this
+// says; it only decides the language of blocks it writes.
 export const Config = z.object({
   kbDir: z.string().default(""),
   idPrefix: z.string().default("E-"),
@@ -44,12 +49,43 @@ export const Config = z.object({
   labels: z.union(["en", "zh"]).default("en"),
 });
 
-// The whole behaviour of this task: one startup line, now carrying the resolved
-// directory and the tier that produced it (T05).
-export function apply(ctx: Context, config: Schemastery.TypeT<typeof Config>) {
-  ctx.logger.info(formatKbLog(resolveKbDir(config.kbDir, defaultProbe())));
+/** The plugin's settings, as apply() receives them. */
+export type Config = Schemastery.TypeT<typeof Config>;
 
-  // TODO(T11): register the agent/error and tools/result listeners here.
+/**
+ * The recorder settings a configuration selects.
+ *
+ * @param config - the plugin's settings.
+ * @returns capture, matching and store settings for createRecorder().
+ */
+export function recorderOptions(config: Config): RecorderOptions {
+  return {
+    capture: config.capture,
+    captureExitCodes: config.captureExitCodes,
+    transientThreshold: config.transientThreshold,
+    fuzzyThreshold: config.fuzzyThreshold,
+    share: config.share === "private" ? "private" : "public",
+    maxEntries: config.maxEntries,
+    maxSampleChars: config.maxSampleChars,
+    labels: config.labels,
+    idPrefix: config.idPrefix,
+    idWidth: config.idWidth,
+  };
+}
+
+// One startup line with the resolved directory and its tier (T05), then the
+// two capture listeners (T11). Nothing is injected into the model's context
+// yet.
+export function apply(ctx: Context, config: Config) {
+  const kb = resolveKbDir(config.kbDir, defaultProbe());
+  ctx.logger.info(formatKbLog(kb));
+  const recorder = createRecorder({
+    files: kb.files,
+    logger: ctx.logger,
+    options: recorderOptions(config),
+  });
+  registerListeners(ctx, recorder);
+
   // TODO(T13): register tools/post-execute, agent/pre-step and
   // agent/session-start, and publish the system-prompt section here.
   // TODO(T16): register the agent/request-error listener here.

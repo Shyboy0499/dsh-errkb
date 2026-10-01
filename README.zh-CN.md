@@ -1,6 +1,6 @@
 # dsh-errkb · 报错回收再利用
 
-![状态](https://img.shields.io/badge/status-P2%20complete-yellow)
+![状态](https://img.shields.io/badge/status-P3%20complete-yellow)
 ![许可证](https://img.shields.io/github/license/jingchangzhao-gif/dsh-errkb)
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
@@ -10,17 +10,18 @@
 
 `dsh-errkb` 是一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）插件。它把模型遇到的报错变成一份带编号、人可编辑的知识库 —— 然后在模型**开始诊断之前**，把已记录的解法塞回上下文。
 
-> **状态：P2 已完成。** 设计文档已写完、正在审查中 —— 其中 §17 的 8 项里还有 6 项
+> **状态：P3 已完成。** 设计文档已写完、正在审查中 —— 其中 §17 的 8 项里还有 6 项
 > 未拍板（第 2、4 问已定）—— 工作被拆成 **18 个 task**，归入 7 个里程碑。
-> **T01–T10 已完成：** 包装得上、构建得出、过得了类型检查与 lint、格式与测试也都
-> 跑得通，CI 在每次 PR 上都会执行这五步；纯本地层已经齐全：知识库目录解析
-> （T05）、报错规范化与指纹（T06）、强制脱敏（T07）、`ERRORS.md` 存储（T08）
-> 与匹配（T09）。采集层已经开工：分类与噪声规则（T10）已就位，下一步是接上前两个
-> 钩子（T11）。
+> **T01–T11 已完成：** 包装得上、构建得出、过得了类型检查与 lint、格式与测试也都
+> 跑得通（99% 覆盖率门槛已真正生效），CI 在每次 PR 上都会执行这五步；纯本地层
+> 已经齐全：知识库目录解析（T05）、报错规范化与指纹（T06）、强制脱敏（T07）、
+> `ERRORS.md` 存储（T08）与匹配（T09）。采集层已经接通：分类与噪声规则（T10），
+> 以及前两个钩子 `agent/error` 与 `tools/result`（T11）。
 >
-> **插件本身仍然什么都不做。** `apply` 只打一行启动日志、不调用上面任何模块，也还没装进任何 profile
-> （那是 T17），所以现在没有任何可用行为。下面标着「尚未实现」的部分，依然只是
-> 目标路径的描述。
+> **插件只会记录，别的还不做。** 装进 profile 后，`apply` 会打出知识库位置，并把
+> 工具失败、命令非零退出和回合级异常记进 `ERRORS.md`。还不会往模型上下文里注入
+> 任何东西（T12–T14），没有工具（T15），不采集 LLM 请求失败（T16），也还没装进
+> 任何 profile（T17）。下面标着「尚未实现」的部分，依然只是目标路径的描述。
 >
 > - 设计文档：[`docs/设计说明书.md`](docs/设计说明书.md) —— 19 节
 > - 它将来会做什么：[它怎么工作](#它怎么工作)
@@ -66,19 +67,20 @@
 | `package.json`、`tsconfig.json`、`tsdown.config.ts`、`vitest.config.ts`  | ✅ 就位（T01–T03） |
 | `.prettierignore`、`.gitattributes` —— 格式与行尾策略                    | ✅ 就位          |
 | `cordis.patch.yml` —— bundle patch                                       | ✅ 就位（T04）    |
-| `src/index.ts` —— 插件入口（`name`、`inject`、`Config`、`apply`）        | ✅ 就位（T04），仅入口、无行为 |
+| `src/index.ts` —— 插件入口（`name`、`inject`、`Config`、`apply`）        | ✅ 就位（T04）；`apply` 读取配置并注册 `agent/error` 与 `tools/result` 监听器（T11） |
+| `src/plugin.ts` —— 这两个监听器背后的采集流水线                          | ✅ 就位（T11），语句与行覆盖 100% |
 | `src/paths.ts` —— 库目录解析                                             | ✅ 就位（T05），覆盖 100% |
-| `src/signature.ts` —— 规范化与指纹                                       | ✅ 就位（T06），覆盖 100% —— 尚无调用方 |
-| `src/redact.ts`、`src/redact-patterns.ts` —— 强制脱敏                    | ✅ 就位（T07），覆盖 100% —— 尚无调用方 |
-| `src/store.ts` —— 解析、渲染、追加、归档                                 | ✅ 就位（T08），语句与行覆盖 100% —— 尚无调用方 |
+| `src/signature.ts` —— 规范化与指纹                                       | ✅ 就位（T06），覆盖 100% —— 由采集与匹配调用 |
+| `src/redact.ts`、`src/redact-patterns.ts` —— 强制脱敏                    | ✅ 就位（T07），覆盖 100% —— 存储每次写入都会套用 |
+| `src/store.ts` —— 解析、渲染、追加、归档                                 | ✅ 就位（T08），语句与行覆盖 100% —— 由 T11 的监听器写入 |
 | `seeds/ERRORS.seed.md` —— 三条精选、已脱敏的种子条目                      | ✅ 就位（T08）—— 尚未被复制进任何知识库 |
-| `src/match.ts` —— 精确、模糊与兜底匹配                                   | ✅ 就位（T09），语句与行覆盖 100% —— 尚无调用方 |
+| `src/match.ts` —— 精确、模糊与兜底匹配                                   | ✅ 就位（T09），语句与行覆盖 100% —— 每次写入前先查 |
 | `src/state.ts` —— `state.json`、`.machine.json`、环境指纹                | ⛔ 未开始       |
-| `src/capture.ts` —— 分类、标题行提取与噪声规则                           | ✅ 就位（T10），语句与行覆盖 100% —— 尚无调用方 |
+| `src/capture.ts` —— 分类、标题行提取与噪声规则                           | ✅ 就位（T10），语句与行覆盖 100% —— 由 T11 的监听器调用 |
 | `src/inject.ts` —— 通知生成与硬上限                                      | ⛔ 未开始       |
 | `src/resolve-detect.ts` —— 解决检测                                      | ⛔ 未开始       |
 | `src/tools.ts` —— 五个工具                                               | ⛔ 未开始       |
-| `tests/`                                                                 | ✅ 291 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 58 与 `seeds` 5（T08）、`match` 40（T09）、`capture` 67（T10） |
+| `tests/`                                                                 | ✅ 325 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 58 与 `seeds` 5（T08）、`match` 40（T09）、`capture` 67（T10）、`plugin` 34（T11） |
 | 装进 `web` profile                                                       | ⛔ 未开始       |
 | 发布到 npm                                                               | ⛔ 未开始 —— 还没有 task 覆盖它，见[开发路线图](#开发路线图) |
 
@@ -92,8 +94,9 @@
 
 ## 能力
 
-> **设计已定，尚未实现。** 以下每一条都在设计文档里有规格、有测试计划。
-> **现在没有一条能跑** —— 见[目前完成到哪一步](#目前完成到哪一步)。
+> **设计已定，大部分尚未实现。** 以下每一条都在设计文档里有规格、有测试计划。
+> 目前只有「记录」在跑：稳定编号、同一报错一个编号、强制脱敏，对 T11 监听器写入的
+> 内容生效。注入、工具与账本都还不存在 —— 见[目前完成到哪一步](#目前完成到哪一步)。
 
 | 行为                 | 细节                                                     |
 | -------------------- | -------------------------------------------------------- |
@@ -152,6 +155,8 @@
 | 瞬时 LLM 失败        | `agent/request-error`             | `RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`、`EMPTY_RESPONSE` | ❌ 只计数 —— 同一会话内累计到 `transientThreshold`（默认 5）才升级为条目           |
 
 `agent/request-error` 上的监听器必须 `await next()` 并原样返回下游结果。它只观察，永不接管恢复。
+
+**今天接通了什么（T11）。** 监听器的处理体在 `src/plugin.ts`，`apply` 注册其中两个。`agent/error` 把它的 `error` 作为回合级异常交给分类。`tools/result` 把失败结果（`result.isError`）记为工具失败，带上 `result.error.message` 与 `result.error.info?.code`；其余结果则从文本块里嗅探 `[exit code: N]`，命令取自调用参数里的 `command`、`cmd` 或 `script`。每条分好类的报错先与 `ERRORS.md` 里已有的条目匹配：命中则给该条目的命中数与最近时间加一，未命中则追加下一个编号。`count-only` 的报错（未达阈值的瞬时错误，或已升级之后的重复）只给已有同指纹的条目加计数，否则什么也不写。瞬时计数按会话（`Agent.id`）分开；没有 agent 的载荷共用一个插件级计数器。`agent/request-error` 还没注册（T16），所以没有任何 LLM 失败会进入流水线。
 
 **只升级一次。** 瞬时错误按会话、按指纹计数，在计数**达到** `transientThreshold` 的那一次拿到编号 —— 之后不会每次都再升级。`capture` 里没列出的来源什么都不产出，连计数都没有。
 
@@ -408,6 +413,8 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | 密钥/隐私泄进公开仓库                       | 落盘前强制脱敏；`share: 'public'` 时连 `requestId` 都不保留                                                |
 | 条目无限膨胀拖慢上下文                      | `maxEntries` 归档 + 每条 400 字符封顶 + 注入去重与每步/每回合/每会话上限                                   |
 
+**今天实际跑了多少（T11）。** 监听器按上表包裹：失败只计数、经插件的 logger 每分钟最多报一次，永不抛出。在 `src/state.ts` 带来 `state.json` 之前，失败计数只保存在内存里。写入不在回合里进行，同一个知识库一次只写一条，每条有 500 ms 预算，涵盖至多 3 次重试与等锁；预算用完锁仍被占，则静默跳过这次记录。已经拿到锁的写入不会被中途打断，因为存储无法安全地放弃写到一半的文件。解析不了的文档不重试，修好之前不再记录。脱敏、锁、原子写与损坏文档这几行由存储层（T07–T08）负责，对每次写入都生效。
+
 **它永远不会做的事**：接管重试、把异常抛进回合、回写损坏的文档、让一次写入阻塞回合、把任何东西发出这台机器。
 
 ## 已知局限
@@ -460,13 +467,13 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | ---- | -------------------------------------------------------------------- |
 | ✅   | T01–T09 —— 工程骨架（package、tsconfig、tsdown、vitest、bundle patch）、paths、signature、redact、store 与 match |
 | ✅   | T10 —— 分类、标题行提取与瞬时噪声规则                                |
-| 🔜   | T11 —— 前两个钩子：`agent/error` 与 `tools/result`                   |
+| ✅   | T11 —— 前两个钩子：`agent/error` 与 `tools/result`                   |
 | 🔜   | T12–T14 —— 注入层：通知文本、四个注入点、解决检测                    |
 | 🔜   | T15 —— 五个工具                                                      |
 | 🔜   | T16–T17 —— LLM 失败接入，以及安装进 web profile                      |
 | 🔜   | T18 —— 可选：Obsidian 导出                                           |
 
-T01–T10 已勾选；T01–T05 已合并到上游，T06–T10 尚未合并。其余仍开放；T18 随时可以砍掉，不影响主线。
+T01–T11 已勾选；T01–T10 已合并到上游，T11 尚未合并。其余仍开放；T18 随时可以砍掉，不影响主线。
 
 ### 阶段对照
 
@@ -476,8 +483,8 @@ T01–T10 已勾选；T01–T05 已合并到上游，T06–T10 尚未合并。�
 | ------------ | ------- | --------------------------------------------------------------------- |
 | P0           | ——      | 设计文档已写完，且**你已补齐 §17** —— 8 问已答 2 问（第 2、4 问）   |
 | P1           | T01–T04 | ✅ `pnpm typecheck` 通过 —— 本地与 CI 均已验证                       |
-| P2           | T05–T09 | ✅ 单测全绿；T05–T09 各模块语句与行覆盖 100%（全局门槛还统计 `src/index.ts`，由 T11 接上） |
-| P3           | T10–T11 | 一条必然失败的命令产出 `E-0001` —— T10 已完成（语句与行覆盖 100%），T11 未开始 |
+| P2           | T05–T09 | ✅ 单测全绿；T05–T09 各模块语句与行覆盖 100% |
+| P3           | T10–T11 | ✅ 一条必然失败的命令产出 `E-0001` —— 已在临时知识库上端到端验证；99% 门槛现在由 `pnpm test` 执行 |
 | P4           | T12–T14 | 重复的失败被自动注入，模型不再重新诊断                                |
 | P5           | T15     | 模型可调 `err_lookup` 与 `err_record`                                 |
 | P6           | T16–T17 | `--dump-config` 可见该条目；云端与本地报错各记一条                    |
@@ -504,7 +511,7 @@ T01–T10 已勾选；T01–T05 已合并到上游，T06–T10 尚未合并。�
 | ☑ T08 | 文档存储                   | `src/store.ts` —— 解析、渲染、追加、归档、锁、原子写                         | 写读往返一致；手改的解法能读回；并发 50 次记录产出 50 个唯一编号   |
 | ☑ T09 | 匹配                       | `src/match.ts` —— 精确、模糊、code 兜底、误判兜底                            | 边界值 0.71 / 0.72 / 0.73 符合规格                                 |
 | ☑ T10 | 分类与噪声抑制             | `src/capture.ts`                                                             | 瞬时错误达阈值前不编号；关闭采集则零写入                           |
-| ☐ T11 | 接前两个钩子               | `agent/error`、`tools/result` 监听器                                         | 一条必然失败的命令产出 `E-0001`                                    |
+| ☑ T11 | 接前两个钩子               | `agent/error`、`tools/result` 监听器                                         | 一条必然失败的命令产出 `E-0001`                                    |
 | ☐ T12 | 生成通知                   | `src/inject.ts` —— 模板、上限、去重                                          | 上限成立；source 形状与 summary 长度精确                           |
 | ☐ T13 | 接四个注入点               | `tools/post-execute`、`agent/pre-step`、`agent/session-start`、system prompt | 重复的失败被自动注入，模型不再重新诊断                             |
 | ☐ T14 | 解决检测                   | `src/resolve-detect.ts`                                                      | `fixed` 条目提示一次后静默                                         |
@@ -520,7 +527,7 @@ T01–T10 已勾选；T01–T05 已合并到上游，T06–T10 尚未合并。�
 ```sh
 pnpm install
 pnpm build            # tsdown → lib/
-pnpm test             # vitest
+pnpm test             # vitest + 覆盖率；statements 或 lines 低于 99 即失败
 pnpm typecheck        # tsc --noEmit
 pnpm lint             # oxlint
 pnpm format           # prettier --write .
@@ -529,7 +536,7 @@ pnpm format:check     # prettier --check .（CI 跑的就是这条）
 
 ### 测试计划
 
-测试计划在设计文档 §14。覆盖率门槛：statements 与 lines ≥ 99。计划分七组：
+测试计划在设计文档 §14。覆盖率门槛：statements 与 lines ≥ 99，自 T11 起由 `pnpm test` 强制执行。计划分七组：
 
 1. `signature` —— 路径、行号、PID、时间戳、UUID 变化后指纹不变；不同报错指纹不同；空串、纯 ANSI、超长串不崩。
 2. `match` —— 精确命中、Jaccard 边界（0.71 / 0.72 / 0.73）、短消息 code 兜底、误判条目永不注入。
@@ -537,7 +544,7 @@ pnpm format:check     # prettier --check .（CI 跑的就是这条）
 4. `store` —— 写入/解析往返一致；手改的解法能读回；损坏文件走「另存 + 只追加」；归档阈值触发；编号单调递增；**并发 50 次记录产出 50 个唯一编号，且文档仍可完整解析**。
 5. `capture` —— 四类载荷分类正确；瞬时限流达阈值前不编号；采集开关全关时零写入。
 6. `inject` —— 文本长度上限、每步 ≤1 条、每回合 ≤3 条、source 形状 `{kind:'plugin',plugin:'err-kb',form:'notice',summary}` 且 `summary` ≤120 字符。
-7. `plugin` —— 用假 ctx 校验监听器已注册、异常被吞、`agent/request-error` 返回值与下游结果完全一致（对象同一性断言）。
+7. `plugin` —— 用假 ctx 校验监听器已注册、异常被吞、`agent/request-error` 返回值与下游结果完全一致（对象同一性断言）。前两项已在 `tests/plugin.test.ts`（T11）里，外加「失败命令产出 `E-0001`、重复一次命中数加一」；`agent/request-error` 那一项随 T16 到来。
 
 第 4 组里那条并发测试是最要紧的一条，因为它对应的是唯一权威文件被写坏的失败模式。
 
