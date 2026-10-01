@@ -13,6 +13,11 @@ import {
   NOTICE_MAX_TOKENS,
   PLUGIN_NAME,
   SUMMARY_MAX_CHARS,
+  DIGEST_MAX_TITLES,
+  DIGEST_TITLE_MAX_CHARS,
+  SESSION_DIGEST_MODES,
+  SYSTEM_PROMPT_HINT,
+  SYSTEM_PROMPT_SECTION,
   WORDING,
   clip,
   estimateTokens,
@@ -22,6 +27,7 @@ import {
   noticeSource,
   noticeText,
   oneLine,
+  sessionDigestText,
   trustLevel,
   withinCaps,
 } from "../src/inject";
@@ -649,5 +655,117 @@ describe("Injector", () => {
       expect(withinCaps(notice!.text)).toBe(true);
       expect(notice!.source.summary.length).toBeLessThanOrEqual(120);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T13: scoped trust, observe(), the digest and the standing section
+
+describe("fix trust scopes (T13)", () => {
+  it("a recurrence counts only in the scope that injected the fix", () => {
+    const trust = new FixTrust();
+    trust.injected("E-0007", FIX, "a");
+    trust.seen("E-0007", FIX, "b");
+    expect(trust.record("E-0007", FIX)?.recurredAfterInject).toBe(0);
+    trust.beginTurn("b");
+    trust.seen("E-0007", FIX, "a");
+    expect(trust.record("E-0007", FIX)?.recurredAfterInject).toBe(1);
+  });
+
+  it("a new turn in one scope leaves another scope's injections alone", () => {
+    const trust = new FixTrust();
+    trust.injected("E-0007", FIX, "a");
+    trust.injected("E-0008", FIX, "b");
+    trust.beginTurn("a");
+    trust.seen("E-0007", FIX, "a");
+    trust.seen("E-0008", FIX, "b");
+    expect(trust.record("E-0007", FIX)?.recurredAfterInject).toBe(0);
+    expect(trust.record("E-0008", FIX)?.recurredAfterInject).toBe(1);
+  });
+
+  it("an observed hit is not counted again when it is offered", () => {
+    const trust = new FixTrust();
+    const injector = new Injector({ trust, scope: "s" });
+    const event = hit() as Extract<NoticeEvent, { kind: "hit" }>;
+    expect(injector.offer(event)?.kind).toBe("hit");
+    injector.caps.beginStep();
+    injector.observe(event.hit);
+    expect(injector.offer(event, true)?.kind).toBe("doubted");
+    expect(trust.record("E-0007", FIX)?.recurredAfterInject).toBe(1);
+  });
+});
+
+describe("sessionDigestText", () => {
+  const e = (
+    id: string,
+    hits: number,
+    injectable = true,
+    title = `title ${id}`,
+  ) => ({
+    id,
+    title,
+    hits,
+    injectable,
+  });
+
+  it("knows the three modes", () => {
+    expect(SESSION_DIGEST_MODES).toEqual(["off", "counts", "index"]);
+  });
+
+  it("counts: one line, singular and plural", () => {
+    expect(sessionDigestText([e("E-0001", 1)], "counts")).toBe(
+      "[errkb] 1 known error; known fixes are shown when an error repeats.",
+    );
+    expect(sessionDigestText([e("E-0001", 1), e("E-0002", 1)], "counts")).toBe(
+      "[errkb] 2 known errors; known fixes are shown when an error repeats.",
+    );
+  });
+
+  it("off, or nothing recorded: nothing", () => {
+    expect(sessionDigestText([e("E-0001", 1)], "off")).toBeUndefined();
+    expect(sessionDigestText([], "counts")).toBeUndefined();
+    expect(sessionDigestText([], "index")).toBeUndefined();
+  });
+
+  it("index: most hits first, document order on ties, capped and clipped", () => {
+    const entries = Array.from({ length: 14 }, (_, i) =>
+      e(
+        `E-${String(i + 1).padStart(4, "0")}`,
+        i % 3,
+        true,
+        `t${i + 1} ${"x".repeat(100)}`,
+      ),
+    );
+    const lines = (sessionDigestText(entries, "index") as string).split("\n");
+    expect(lines).toHaveLength(DIGEST_MAX_TITLES + 1);
+    expect(lines.slice(1, 4).map((l) => l.split(" ")[0])).toEqual([
+      "E-0003",
+      "E-0006",
+      "E-0009",
+    ]);
+    const title = lines[1]?.replace(/^E-0003 /, "").replace(/ \(2 hits\)$/, "");
+    expect(Array.from(title as string)).toHaveLength(DIGEST_TITLE_MAX_CHARS);
+    expect(title?.endsWith(ELLIPSIS)).toBe(true);
+  });
+
+  it("index with only excluded entries is the count line alone", () => {
+    expect(sessionDigestText([e("E-0001", 9, false)], "index")).toBe(
+      "[errkb] 1 known error; known fixes are shown when an error repeats.",
+    );
+  });
+});
+
+describe("the standing section", () => {
+  it("is plugin:errkb at 10400, about 50 tokens, with no template variables", () => {
+    expect(SYSTEM_PROMPT_SECTION).toEqual({
+      name: "plugin:errkb",
+      order: 10400,
+    });
+    expect(estimateTokens(SYSTEM_PROMPT_HINT)).toBeLessThanOrEqual(90);
+    expect(SYSTEM_PROMPT_HINT.split(/\s+/).length).toBeLessThanOrEqual(50);
+    expect(SYSTEM_PROMPT_HINT).not.toMatch(/\{\{/);
+    // err_record does not exist before T15; the text must not send the model
+    // looking for it.
+    expect(SYSTEM_PROMPT_HINT).not.toContain("err_record");
   });
 });
