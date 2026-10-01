@@ -42,12 +42,12 @@ export type CaptureFixMode = (typeof CAPTURE_FIX_MODES)[number];
 
 /**
  * The one-shot prompt for an entry that looks resolved and has no fix. It
- * names no tool: `err_record` arrives with T15, like the standing section.
+ * names `err_record` (T15), the one tool that writes a fix.
  *
  * @param id - the entry.
  */
 export function askFixText(id: string): string {
-  return `[errkb] ${id} looks resolved. State the fix in one sentence so it can be reused.`;
+  return `[errkb] ${id} looks resolved. Record the fix with err_record in one sentence so it can be reused.`;
 }
 
 /** The parts of one tool call that resolution detection reads. */

@@ -532,7 +532,7 @@ describe("Injector", () => {
     expect(asked).toEqual({
       id: "E-0011",
       kind: "ask-fix",
-      text: "[errkb] E-0011 looks resolved. State the fix in one sentence so it can be reused.",
+      text: "[errkb] E-0011 looks resolved. Record the fix with err_record in one sentence so it can be reused.",
       source: noticeSource(asked?.text as string),
     });
     // One notice per step.
@@ -790,8 +790,9 @@ describe("the standing section", () => {
     expect(estimateTokens(SYSTEM_PROMPT_HINT)).toBeLessThanOrEqual(90);
     expect(SYSTEM_PROMPT_HINT.split(/\s+/).length).toBeLessThanOrEqual(50);
     expect(SYSTEM_PROMPT_HINT).not.toMatch(/\{\{/);
-    // err_record does not exist before T15; the text must not send the model
-    // looking for it.
-    expect(SYSTEM_PROMPT_HINT).not.toContain("err_record");
+    // T15: the hint points at the one tool that writes a fix.
+    expect(SYSTEM_PROMPT_HINT).toContain(
+      "record a working fix with err_record",
+    );
   });
 });

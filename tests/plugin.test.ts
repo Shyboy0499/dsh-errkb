@@ -54,6 +54,9 @@ function fakeCtx() {
       listeners.set(name, [...(listeners.get(name) ?? []), listener]);
       return () => true;
     },
+    tools: {
+      register: () => () => undefined,
+    },
     systemPrompt: {
       section(section: unknown) {
         sections.push(section);

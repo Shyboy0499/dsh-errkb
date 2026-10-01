@@ -12,8 +12,8 @@
 //   doubted   … | fix: … This fix failed here last time; verify before applying.
 //   no fix    [errkb] E-0007 seen before (5 hits), no fix recorded yet.
 //   miss      [errkb] recorded as E-0011 (no fix yet).
-//   ask-fix   [errkb] E-0011 looks resolved. State the fix in one sentence so
-//             it can be reused. (T14, src/resolve-detect.ts)
+//   ask-fix   [errkb] E-0011 looks resolved. Record the fix with err_record
+//             in one sentence so it can be reused. (T14, src/resolve-detect.ts)
 //
 // The hit wording answers docs/discussions.md §1.2: it orders the work ("try
 // this first") instead of forbidding any ("do not re-diagnose"), so it does not
@@ -690,10 +690,9 @@ export const SYSTEM_PROMPT_SECTION = {
 } as const;
 
 /**
- * The standing guidance, about 50 tokens (§7). It names no tool: `err_record`
- * arrives with T15, and a prompt that pointed at a missing tool would send the
- * model looking for it. Until then it asks for the fix in one plain sentence, so
- * at least the transcript holds it; T15 points the last sentence at the tool. No `{{variable}}` references: the text is rendered as is.
+ * The standing guidance, about 50 tokens (§7). Its last sentence names
+ * `err_record` (T15), the only tool that writes a fix. No `{{variable}}`
+ * references: the text is rendered as is.
  */
 export const SYSTEM_PROMPT_HINT =
-  "Errors are tracked by the errkb plugin. A context line starting with [errkb] names a known error and, when one is recorded, its fix: try that fix before re-diagnosing. When you resolve an error that has no recorded fix, state the fix in one short sentence.";
+  "Errors are tracked by the errkb plugin. A context line starting with [errkb] names a known error and, when one is recorded, its fix: try that fix before re-diagnosing. When you resolve an error that has no recorded fix, record a working fix with err_record.";

@@ -1,7 +1,7 @@
 // dsh-errkb plugin entry. This file declares the plugin's surface and wires it:
 // apply() resolves the knowledge base, binds a recorder to it, and registers the
 // two capture listeners (T11) together with the four injection points (T13),
-// which also feed resolution detection (T14).
+// which also feed resolution detection (T14), and the five tools (T15).
 // The pipeline itself lives in src/plugin.ts; every registration point still
 // to come is marked with the task that owns it.
 import type { Context } from "@deepseek-ai/cordis";
@@ -18,6 +18,7 @@ import {
   registerInjection,
 } from "./plugin";
 import type { InjectionOptions, RecorderOptions } from "./plugin";
+import { registerTools } from "./tools";
 
 // The plugin's runtime name, matching `id` in cordis.patch.yml. The installed
 // harness plugins follow the same rule: dsh-spill-policy exports "spill-policy",
@@ -126,7 +127,8 @@ export function injectionOptions(config: Config): InjectionOptions {
 }
 
 // One startup line with the resolved directory and its tier (T05), then the
-// two capture listeners (T11) and the four injection points (T13).
+// two capture listeners (T11), the four injection points (T13) and the five
+// tools (T15).
 export function apply(ctx: Context, config: Config) {
   const kb = resolveKbDir(config.kbDir, defaultProbe());
   ctx.logger.info(formatKbLog(kb));
@@ -140,6 +142,16 @@ export function apply(ctx: Context, config: Config) {
     options: injectionOptions(config),
   });
   registerInjection(ctx, injection, recorder);
+  registerTools(ctx, {
+    recorder,
+    injection,
+    kbDir: kb.dir,
+    options: {
+      idPrefix: config.idPrefix,
+      idWidth: config.idWidth,
+      fuzzyThreshold: config.fuzzyThreshold,
+    },
+  });
 
   // TODO(T16): register the agent/request-error listener here.
 }

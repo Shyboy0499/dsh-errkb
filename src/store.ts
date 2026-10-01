@@ -591,6 +591,11 @@ export interface ErrorStore {
   append(input: NewEntry): Promise<AppendResult>;
   /** Change fields of an existing entry; undefined when the ID is unknown. */
   update(id: string, patch: EntryPatch): Promise<Entry | undefined>;
+  /**
+   * Move one entry to the archive (`err_forget`, T15), with `reason` added to
+   * its notes; undefined when the ID is unknown. Nothing is deleted.
+   */
+  archive(id: string, reason?: string): Promise<Entry | undefined>;
 }
 
 const CORRUPT_COPY = /^ERRORS\.corrupt-.*\.md$/;
@@ -711,6 +716,28 @@ export function createStore(
     };
   }
 
+  /** The current document, for a rewrite; one that does not parse is refused. */
+  async function readForRewrite(): Promise<ErrorDocument> {
+    const text = (await fs.readFile(files.errors)) ?? "";
+    try {
+      return parseDocument(text, o.idPrefix);
+    } catch (error) {
+      if (!(error instanceof ParseError)) throw error;
+      throw new StoreCorruptError(error, await saveAside(text));
+    }
+  }
+
+  /** Re-render one block in its own label set, keeping its trailing blank lines. */
+  function rewrite(block: Block, entry: Entry): void {
+    const trailing = (/\n*$/.exec(block.source) as RegExpExecArray)[0];
+    const labels = detectLabels(block.source) ?? o.labels;
+    block.entry = entry;
+    block.source = renderEntry(entry, labels).replace(
+      /\n$/,
+      trailing.length > 0 ? trailing : "\n",
+    );
+  }
+
   return {
     async read() {
       return parseDocument((await fs.readFile(files.errors)) ?? "", o.idPrefix);
@@ -758,14 +785,7 @@ export function createStore(
 
     update(id, patch) {
       return withLock(async () => {
-        const text = (await fs.readFile(files.errors)) ?? "";
-        let document: ErrorDocument;
-        try {
-          document = parseDocument(text, o.idPrefix);
-        } catch (error) {
-          if (!(error instanceof ParseError)) throw error;
-          throw new StoreCorruptError(error, await saveAside(text));
-        }
+        const document = await readForRewrite();
         const block = document.blocks.find((b) => b.entry.id === id);
         if (block === undefined) return undefined;
 
@@ -778,13 +798,37 @@ export function createStore(
         if (patch.status !== undefined) entry.status = patch.status;
         if (patch.hits !== undefined) entry.hits = patch.hits;
 
-        const trailing = (/\n*$/.exec(block.source) as RegExpExecArray)[0];
-        const labels = detectLabels(block.source) ?? o.labels;
-        block.entry = entry;
-        block.source = renderEntry(entry, labels).replace(
-          /\n$/,
-          trailing.length > 0 ? trailing : "\n",
+        rewrite(block, entry);
+        await writeAtomic(files.errors, renderDocument(document));
+        return entry;
+      });
+    },
+
+    archive(id, reason) {
+      return withLock(async () => {
+        const document = await readForRewrite();
+        const index = document.blocks.findIndex((b) => b.entry.id === id);
+        if (index === -1) return undefined;
+        const block = document.blocks[index] as Block;
+
+        const why = clean(reason ?? "").replace(/\s+/g, " ");
+        const line = `Archived ${formatSeen(clock.now())}${why === "" ? "" : `: ${why}`}`;
+        const notes =
+          block.entry.notes === "" ? line : `${block.entry.notes}\n${line}`;
+        const entry: Entry = { ...block.entry, notes };
+        rewrite(block, entry);
+
+        // Same order as maxEntries archiving: the archive gains the block
+        // before the document loses it, so a crash in between duplicates the
+        // entry rather than losing it.
+        const archiveText = (await fs.readFile(files.archive)) ?? "";
+        const header = archiveText === "" ? ARCHIVE_HEADER : "";
+        const lead = header + separatorAfter(archiveText || ARCHIVE_HEADER);
+        await fs.appendFile(
+          files.archive,
+          lead + block.source.replace(/\n*$/, "\n"),
         );
+        document.blocks.splice(index, 1);
         await writeAtomic(files.errors, renderDocument(document));
         return entry;
       });

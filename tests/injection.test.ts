@@ -82,6 +82,9 @@ function fakeCtx(options: { sectionThrows?: boolean } = {}) {
       listeners.set(name, [...(listeners.get(name) ?? []), listener]);
       return () => true;
     },
+    tools: {
+      register: () => () => undefined,
+    },
     systemPrompt: {
       section(section: { name: string; order: number; text: string }) {
         if (options.sectionThrows) throw new Error("duplicate section");
@@ -1129,7 +1132,7 @@ describe("resolution detection (T14)", () => {
       askFixText("E-0001"),
     ]);
     expect(askFixText("E-0001")).toBe(
-      "[errkb] E-0001 looks resolved. State the fix in one sentence so it can be reused.",
+      "[errkb] E-0001 looks resolved. Record the fix with err_record in one sentence so it can be reused.",
     );
     // It fails and resolves again: never asked twice in a session.
     await call(fake, shell(), ok(TSC_B));
