@@ -11,9 +11,10 @@
 `dsh-errkb` 是一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）插件。它把模型遇到的报错变成一份带编号、人可编辑的知识库 —— 然后在模型**开始诊断之前**，把已记录的解法塞回上下文。
 
 > **状态：P2 进行中。** 设计文档已写完、正在审查中 —— 其中 §17 还有 8 项未拍板
-> —— 工作被拆成 **18 个 task**，归入 7 个里程碑。**T01–T06 已完成：** 包装得上、
+> —— 工作被拆成 **18 个 task**，归入 7 个里程碑。**T01–T07 已完成：** 包装得上、
 > 构建得出、过得了类型检查与 lint、格式与测试也都跑得通，CI 在每次 PR 上都会执行
-> 这五步；纯本地层已有前两个模块：知识库目录解析（T05）与报错规范化、指纹（T06）。
+> 这五步；纯本地层已有前三个模块：知识库目录解析（T05）、报错规范化与指纹（T06）、
+> 强制脱敏（T07）。
 >
 > **插件本身仍然什么都不做。** `apply` 只打一行启动日志，也还没装进任何 profile
 > （那是 T17），所以现在没有任何可用行为。下面标着「尚未实现」的部分，依然只是
@@ -66,7 +67,7 @@
 | `src/index.ts` —— 插件入口（`name`、`inject`、`Config`、`apply`）        | ✅ 就位（T04），仅入口、无行为 |
 | `src/paths.ts` —— 库目录解析                                             | ✅ 就位（T05），覆盖 100% |
 | `src/signature.ts` —— 规范化与指纹                                       | ✅ 就位（T06），覆盖 100% —— 尚无调用方 |
-| `src/redact.ts` —— 强制脱敏                                              | ⛔ 未开始       |
+| `src/redact.ts`、`src/redact-patterns.ts` —— 强制脱敏                    | ✅ 就位（T07），覆盖 100% —— 尚无调用方 |
 | `src/store.ts` —— 解析、渲染、追加、归档                                 | ⛔ 未开始       |
 | `src/match.ts` —— 精确、模糊与兜底匹配                                   | ⛔ 未开始       |
 | `src/state.ts` —— `state.json`、`.machine.json`、环境指纹                | ⛔ 未开始       |
@@ -74,7 +75,7 @@
 | `src/inject.ts` —— 通知生成与硬上限                                      | ⛔ 未开始       |
 | `src/resolve-detect.ts` —— 解决检测                                      | ⛔ 未开始       |
 | `src/tools.ts` —— 五个工具                                               | ⛔ 未开始       |
-| `tests/`                                                                 | ✅ 69 个用例：`paths` 39（T05）、`signature` 30（T06） |
+| `tests/`                                                                 | ✅ 121 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07） |
 | 装进 `web` profile                                                       | ⛔ 未开始       |
 | 发布到 npm                                                               | ⛔ 未开始 —— 还没有 task 覆盖它，见[开发路线图](#开发路线图) |
 
@@ -359,12 +360,16 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 脱敏是**强制的，而且发生在落盘之前，不是分享之前** —— 未脱敏的原文根本不会到磁盘，只存在于内存里，活到算出指纹为止。落盘前会被替换掉的内容：
 
-- 凭据与请求头：`sk-*`、`Bearer *`、`api[_-]?key=*`、`token=*`、`authorization:`；
+- 凭据与请求头：`sk-*`、`Bearer *`、`api[_-]?key=*`、`token=*`（以及 `password=`、`secret=`）、`authorization:`；
+- 平台与服务商密钥：GitHub（`ghp_`、`gho_`……、`github_pat_`）、AWS（`AKIA…`）、xAI（`xai-`）、Google（`AIza…`）；
 - 长 base64 串、32 位以上十六进制串、邮箱地址；
 - 原始 `requestId`；
-- 当 `share: 'public'`（默认）时额外：绝对路径压成 `<path>`，原始样本封顶 500 字符。
+- 家目录里的用户名（`/home/<名字>`、`/Users/<名字>`、`<盘符>:\Users\<名字>` 变成 `~`）；
+- 当 `share: 'public'`（默认）时额外：绝对路径压成 `<path>`，原始样本封顶 `maxSampleChars`（500）字符。
 
-`share: 'private'` 会保留项目内相对路径，自查更方便，但前提是这份文件只留在你自己的机器上。
+`share: 'private'` 会保留项目内相对路径和其余绝对路径，自查更方便，但前提是这份文件保持私有。
+
+凭据规则只有一份，在 `src/redact-patterns.ts`。CI 的隐私守卫是一条 shell `grep`，表达式是它自己的一份拷贝；有一条测试会解析 `.github/workflows/privacy-guard.yml`，只要那里有一类规则在该文件里找不到对应项就失败，两边不会再悄悄漂移。文本规则脱敏依然不可能完备 —— 内网主机名、SSH 报错里的 `user@host`、长度不够阈值的短 token 都会漏过去 —— 这正是下一段要把真实条目挡在公开仓库之外的原因。
 
 **设计假设知识库会被 git 跟踪**，以便跨设备同步，脱敏是兜底。你要是不愿意，把 `share` 改成 `'private'`，并把 `ERRORS.md`、`ERRORS.archive.md` 加进 `.gitignore` 即可。
 
@@ -433,15 +438,15 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 | 状态 | Tasks                                                                |
 | ---- | -------------------------------------------------------------------- |
-| ✅   | T01–T06 —— 工程骨架（package、tsconfig、tsdown、vitest、bundle patch）、paths 与 signature |
-| 🔜   | T07–T09 —— redact、store、match                                      |
+| ✅   | T01–T07 —— 工程骨架（package、tsconfig、tsdown、vitest、bundle patch）、paths、signature 与 redact |
+| 🔜   | T08–T09 —— store、match                                              |
 | 🔜   | T10–T11 —— 采集层：分类，以及前两个钩子                              |
 | 🔜   | T12–T14 —— 注入层：通知文本、四个注入点、解决检测                    |
 | 🔜   | T15 —— 五个工具                                                      |
 | 🔜   | T16–T17 —— LLM 失败接入，以及安装进 web profile                      |
 | 🔜   | T18 —— 可选：Obsidian 导出                                           |
 
-T01–T06 已勾选；T01–T05 已合并，T06 在审查中。其余仍开放；T18 随时可以砍掉，不影响主线。
+T01–T07 已勾选；T01–T05 已合并，T06–T07 在审查中。其余仍开放；T18 随时可以砍掉，不影响主线。
 
 ### 阶段对照
 
@@ -475,7 +480,7 @@ T01–T06 已勾选；T01–T05 已合并，T06 在审查中。其余仍开放�
 | ☑ T04 | bundle patch 与空 `apply`  | 插件入口：`name`、`inject`、`Config`、`apply`                                | `pnpm typecheck` 通过                                              |
 | ☑ T05 | 解析库路径                 | `src/paths.ts` —— 三级解析、启动日志                                         | 三种情形各返回预期路径                                             |
 | ☑ T06 | 规范化与指纹               | `src/signature.ts`                                                           | 路径、行号、PID、时间戳、UUID 变化 → 指纹不变；不同报错 → 指纹不同 |
-| ☐ T07 | 脱敏                       | `src/redact.ts`                                                              | 断言输出中 0 命中                                                  |
+| ☑ T07 | 脱敏                       | `src/redact.ts`                                                              | 断言输出中 0 命中                                                  |
 | ☐ T08 | 文档存储                   | `src/store.ts` —— 解析、渲染、追加、归档、锁、原子写                         | 写读往返一致；手改的解法能读回；并发 50 次记录产出 50 个唯一编号   |
 | ☐ T09 | 匹配                       | `src/match.ts` —— 精确、模糊、code 兜底、误判兜底                            | 边界值 0.71 / 0.72 / 0.73 符合规格                                 |
 | ☐ T10 | 分类与噪声抑制             | `src/capture.ts`                                                             | 瞬时错误达阈值前不编号；关闭采集则零写入                           |

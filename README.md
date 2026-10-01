@@ -12,11 +12,11 @@
 
 > **Status: P2 in progress.** The design document is written and under review —
 > eight decisions in its §17 are still open — and the work is broken into
-> [eighteen tasks](#roadmap) across seven milestones. **T01–T06 are done:** the
+> [eighteen tasks](#roadmap) across seven milestones. **T01–T07 are done:** the
 > package installs, builds, type checks, lints, formats and tests, CI runs all
-> five on every pull request, and the pure local layer has its first two
-> modules: knowledge-base directory resolution (T05) and error normalization and
-> fingerprinting (T06).
+> five on every pull request, and the pure local layer has its first three
+> modules: knowledge-base directory resolution (T05), error normalization and
+> fingerprinting (T06), and mandatory redaction (T07).
 >
 > **The plugin still does nothing.** `apply` writes one startup line, and it is
 > not installed into any profile yet (that is T17), so there is no behaviour to
@@ -70,7 +70,7 @@
 | `src/index.ts` — plugin entry (`name`, `inject`, `Config`, `apply`)       | ✅ In place (T04), entry only — no behaviour |
 | `src/paths.ts` — KB directory resolution                                  | ✅ In place (T05), 100% covered |
 | `src/signature.ts` — normalization and fingerprinting                     | ✅ In place (T06), 100% covered — not called by anything yet |
-| `src/redact.ts` — mandatory redaction                                     | ⛔ Not started             |
+| `src/redact.ts`, `src/redact-patterns.ts` — mandatory redaction           | ✅ In place (T07), 100% covered — not called by anything yet |
 | `src/store.ts` — parse, render, append, archive                           | ⛔ Not started             |
 | `src/match.ts` — exact, fuzzy and fallback matching                       | ⛔ Not started             |
 | `src/state.ts` — `state.json`, `.machine.json`, environment fingerprint   | ⛔ Not started             |
@@ -78,7 +78,7 @@
 | `src/inject.ts` — notice generation and hard caps                         | ⛔ Not started             |
 | `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
 | `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
-| `tests/`                                                                  | ✅ 69 cases: `paths` 39 (T05), `signature` 30 (T06) |
+| `tests/`                                                                  | ✅ 121 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -365,12 +365,16 @@ Everything the plugin does is local: no network calls, no telemetry, and no mode
 
 Redaction is **mandatory and happens before storage, not before sharing** — unredacted text never reaches the disk at all. It exists in memory only, long enough to compute a signature. Before any text is written, these are replaced:
 
-- credentials and headers: `sk-*`, `Bearer *`, `api[_-]?key=*`, `token=*`, `authorization:`;
+- credentials and headers: `sk-*`, `Bearer *`, `api[_-]?key=*`, `token=*` (and `password=`, `secret=`), `authorization:`;
+- provider and platform keys: GitHub (`ghp_`, `gho_`, …, `github_pat_`), AWS (`AKIA…`), xAI (`xai-`), Google (`AIza…`);
 - long base64 runs, hex strings of 32 characters or more, e-mail addresses;
 - the raw `requestId`;
-- with `share: 'public'` (the default) additionally: absolute paths collapse to `<path>` and the raw sample is capped at 500 characters.
+- the user name in a home directory (`/home/<name>`, `/Users/<name>`, `<drive>:\Users\<name>` become `~`);
+- with `share: 'public'` (the default) additionally: absolute paths collapse to `<path>` and the raw sample is capped at `maxSampleChars` (500).
 
-With `share: 'private'` project-relative paths are kept, which makes self-diagnosis easier but assumes the file stays on your machine.
+With `share: 'private'` project-relative and other absolute paths are kept, which makes self-diagnosis easier but assumes the file stays private.
+
+The credential patterns live in one place, `src/redact-patterns.ts`. The CI privacy guard is a shell `grep` and keeps its own copy of the expression; a test parses `.github/workflows/privacy-guard.yml` and fails when a family there has no equivalent in that file, so the two cannot drift apart unnoticed. Text-rule redaction is still not complete — internal host names, `user@host` in SSH errors and short tokens get through — which is why the next section keeps real entries out of public repositories.
 
 **The design assumes the knowledge base is tracked by git** so it can sync across devices, with redaction as the safety net. If you would rather not, set `share: 'private'` and add `ERRORS.md` / `ERRORS.archive.md` to `.gitignore`.
 
@@ -439,15 +443,15 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 
 | State | Tasks                                                                                   |
 | ----- | --------------------------------------------------------------------------------------- |
-| ✅    | T01–T06 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), paths and signature |
-| 🔜    | T07–T09 — redact, store, match                                                          |
+| ✅    | T01–T07 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), paths, signature and redact |
+| 🔜    | T08–T09 — store, match                                                                  |
 | 🔜    | T10–T11 — the capture layer: classification, and the first two hooks                    |
 | 🔜    | T12–T14 — the injection layer: notice text, four injection points, resolution detection |
 | 🔜    | T15 — the five agent tools                                                              |
 | 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
 | 🔜    | T18 — optional: Obsidian export                                                         |
 
-T01–T06 are checked off. T01–T05 are merged; T06 is in review. The rest are open; T18 can be dropped at any point without touching the main line.
+T01–T07 are checked off. T01–T05 are merged; T06–T07 are in review. The rest are open; T18 can be dropped at any point without touching the main line.
 
 ### Milestone mapping
 
@@ -481,7 +485,7 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 | ☑ T04 | Bundle patch and an empty `apply`      | Plugin entry: `name`, `inject`, `Config`, `apply`                            | `pnpm typecheck` passes                                                                              |
 | ☑ T05 | Resolve the KB path                    | `src/paths.ts` — three-tier resolution, startup log                          | Each of the three cases returns the expected path                                                    |
 | ☑ T06 | Normalize and fingerprint              | `src/signature.ts`                                                           | Changed path, line, PID, timestamp or UUID → same signature; different errors → different signatures |
-| ☐ T07 | Redact                                 | `src/redact.ts`                                                              | Zero hits in the output, asserted                                                                    |
+| ☑ T07 | Redact                                 | `src/redact.ts`                                                              | Zero hits in the output, asserted                                                                    |
 | ☐ T08 | Store the document                     | `src/store.ts` — parse, render, append, archive, lock, atomic write          | Round-trip identity; hand-edited fixes read back; 50 concurrent records yield 50 unique IDs          |
 | ☐ T09 | Match                                  | `src/match.ts` — exact, fuzzy, code fallback, mis-flag fallback              | Boundary values 0.71 / 0.72 / 0.73 behave as specified                                               |
 | ☐ T10 | Classify, and suppress noise           | `src/capture.ts`                                                             | Transient errors get no ID until the threshold; capture off writes nothing                           |
