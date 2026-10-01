@@ -570,14 +570,13 @@ describe("err_record", () => {
     expect(two).toMatchObject({ status: "open", fix: "pin the version" });
   });
 
-  it("with message: a hit updates that entry, matched across categories", async () => {
+  it("with message: an exact hit updates that entry, matched across categories", async () => {
     await seed({
       raw: PNPM_EPERM,
       title: "[tool:bash] EPERM",
-      signature: "ffffffffffff",
+      signature: signature("tool", PNPM_EPERM),
     });
     const { tools } = wired();
-    // The seed's signature is made up, so this is a fuzzy hit in `tool`.
     const hit = await callTool(tools, "err_record", {
       message: PNPM_EPERM,
       fix: "close the editor",
@@ -588,16 +587,80 @@ describe("err_record", () => {
       status: "fixed",
       hasFix: true,
     });
+    expect(hit.text).toBe("Updated E-0001 (status fixed).");
     expect(await entries()).toHaveLength(1);
-    expect((await entries())[0]).toMatchObject({ hits: 1 });
+    expect((await entries())[0]).toMatchObject({
+      hits: 1,
+      fix: "close the editor",
+      status: "fixed",
+    });
   });
 
-  it("with message: a hit with nothing else to record just names it", async () => {
-    await seed({ raw: PNPM_EPERM, fix: "known" });
+  it("with message: an exact hit with nothing else to record just names it", async () => {
+    await seed({
+      raw: PNPM_EPERM,
+      signature: signature("tool", PNPM_EPERM),
+      fix: "known",
+    });
     const { tools } = wired();
     expect(
       (await callTool(tools, "err_record", { message: PNPM_EPERM })).value,
     ).toEqual({ id: "E-0001", created: false, status: "open", hasFix: true });
+  });
+
+  it("with message: a fuzzy hit writes nothing and names the candidate", async () => {
+    // The seed's signature is made up, so this is only a fuzzy hit in `tool`.
+    await seed({ raw: PNPM_EPERM, signature: "ffffffffffff" });
+    const before = await readFile(filesIn(dir).errors, "utf8");
+    const { tools } = wired();
+    for (const args of [
+      { message: PNPM_EPERM, fix: "close the editor" },
+      { message: PNPM_EPERM, status: "wontfix", note: "n" },
+      { message: PNPM_EPERM },
+    ]) {
+      const refused = await callTool(tools, "err_record", args);
+      expect(refused.value).toEqual({
+        error:
+          'closest match is E-0001 (approximate, by fuzzy); nothing was written. Call err_record with id: "E-0001" to confirm, or reword message',
+      });
+      expect(refused.text).toBe(`err_record: ${refused.value.error}`);
+    }
+    expect(await readFile(filesIn(dir).errors, "utf8")).toBe(before);
+
+    // Confirming the candidate by ID then records the fix.
+    const confirmed = await callTool(tools, "err_record", {
+      id: "E-0001",
+      fix: "close the editor",
+    });
+    expect(confirmed.value).toEqual({
+      id: "E-0001",
+      created: false,
+      status: "fixed",
+      hasFix: true,
+    });
+    expect((await entries())[0]).toMatchObject({
+      fix: "close the editor",
+      status: "fixed",
+    });
+  });
+
+  it("with message: a code-only hit writes nothing and names the candidate", async () => {
+    await seed({
+      raw: "EBUSY: resource busy",
+      meta: { cat: "tool", code: "EBUSY" },
+    });
+    const before = await readFile(filesIn(dir).errors, "utf8");
+    const { tools } = wired();
+    const refused = await callTool(tools, "err_record", {
+      message: "EBUSY: lock held by vite",
+      category: "tool",
+      fix: "install the adapter",
+    });
+    expect(refused.value.error).toBe(
+      'closest match is E-0001 (approximate, by code); nothing was written. Call err_record with id: "E-0001" to confirm, or reword message',
+    );
+    expect(await readFile(filesIn(dir).errors, "utf8")).toBe(before);
+    expect(await entries()).toHaveLength(1);
   });
 
   it("with message: a miss appends a new entry, redacted, under agent or the category given", async () => {

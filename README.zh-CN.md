@@ -371,7 +371,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 五个工具的输出统一走 `output.schema` + `render`（`@deepseek-ai/dsh-tools` 的 `ToolOutputDefinition`），与 dsh-note 同款，保证模型侧收到的是受控纯文本；它们用 `defineTool` 定义，经 `ctx.tools.register()` 注册。
 
-- **`err_record` 是写入解法的唯一入口。** 给 `id` 时，解法走记录器的 `recordFix()`（条目转为 `fixed`），然后再用一次写入改状态与备注，所以显式给出的 `status` 优先。给 `message` 时，按采集时的方式匹配（取标题行，在 `category` 或所有分类里找）；命中则更新那个条目、不计命中数，未命中则以 `category`（默认 `agent`）追加新条目。匹配与追加在同一次写入里完成，所以关于同一个新报错的两次调用只会建一个条目。
+- **`err_record` 是写入解法的唯一入口。** 给 `id` 时，解法走记录器的 `recordFix()`（条目转为 `fixed`），然后再用一次写入改状态与备注，所以显式给出的 `status` 优先。给 `message` 时，按采集时的方式匹配（取标题行，在 `category` 或所有分类里找）；只有精确命中才更新那个条目（不计命中数）；近似命中 —— 模糊或按错误码 —— 什么都不写，返回 `closest match is E-0007 (approximate, by fuzzy); nothing was written. Call err_record with id: "E-0007" to confirm, or reword message`，免得解法落到一个相似却不同的条目上；未命中则以 `category`（默认 `agent`）追加新条目。匹配与追加在同一次写入里完成，所以关于同一个新报错的两次调用只会建一个条目。
 - **所有写入都走采集的写入路径。** 它们都在知识库唯一的写入链上排队，同样是 500 ms 预算与重试；存储层对每段文本脱敏。锁一直被占或写入失败，都以错误结果返回，绝不抛出。
 - **错误是返回值。** 参数类型不对、`status`/`scope` 取值未知，由 `defineTool` 的校验拒绝（`ToolArgsError`）；其余情况 —— `id` 与 `message` 同时给或都不给、编号不存在、解法为空、`ERRORS.md` 读不出来 —— 返回一行 `error`，例如 `err_record: no entry E-0042`。
 - **token 估算明确标为估算。** `err_stats` 的算法是：*带解法的通知数 × 800 − 所有已送达通知的 token 数*。800 取的是 §7 里一次重新诊断 800–3000 token 的下限；常驻开销（每次请求的系统提示段、会话摘要）没有扣除。

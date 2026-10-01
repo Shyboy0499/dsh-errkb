@@ -446,6 +446,10 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
    * Find the entry a message describes, or append one. Matching and appending
    * run in one write, so two calls about the same new error cannot both
    * append it.
+   *
+   * Only an exact hit names the entry to update. A near hit (fuzzy or code,
+   * §5.3) writes nothing and comes back as the candidate: a fix recorded on a
+   * similar but different entry would later be injected as its known fix.
    */
   async function findOrAppend(
     message: string,
@@ -458,6 +462,10 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
       const document = await store.read();
       const index = indexEntries(document.blocks.map((b) => b.entry));
       const hit = matchText(message, index, category);
+      if (hit !== undefined && hit.via !== "exact")
+        return {
+          error: `closest match is ${hit.id} (approximate, by ${hit.via}); nothing was written. Call err_record with id: "${hit.id}" to confirm, or reword message`,
+        };
       if (hit !== undefined) return { id: hit.id, created: false };
 
       const cat = category ?? DEFAULT_RECORD_CATEGORY;
@@ -484,7 +492,7 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
   const record = defineTool({
     name: "err_record",
     description:
-      "Record what you learned about an error in the errkb knowledge base. Give exactly one of id (an existing entry) or message (the error text; a new entry is created when nothing matches). A fix marks the entry fixed. This is the only way a fix is written.",
+      "Record what you learned about an error in the errkb knowledge base. Give exactly one of id (an existing entry) or message (the error text). A message updates an entry only when it matches exactly; on an approximate match nothing is written and the closest entry's ID is returned, so confirm it with id. A new entry is created when nothing matches. A fix marks the entry fixed. This is the only way a fix is written.",
     parameters: {
       id: {
         type: "string",
@@ -492,7 +500,8 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
       },
       message: {
         type: "string",
-        description: "The error text, when you do not know the ID.",
+        description:
+          "The error text, when you do not know the ID. Only an exact match updates an existing entry.",
       },
       fix: {
         type: "string",
