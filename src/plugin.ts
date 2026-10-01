@@ -1,5 +1,7 @@
 // The capture pipeline behind the plugin's listeners (T11): a hook payload goes
-// in, an entry in ERRORS.md comes out - or nothing, and never a throw.
+// in, an entry in ERRORS.md comes out - or nothing, and never a throw. The
+// injection points built on it (T13) are described where they start, under
+// "Injection (T13)" below.
 //
 // Two hooks feed it, both `emit` events whose listener return value is ignored
 // (design document §2, §6). Their payload types are the real ones, read off the
@@ -40,8 +42,11 @@
 // A payload without an agent counts under one plugin-wide counter. Only the 64
 // most recently active sessions keep a counter, so a long-lived host does not
 // grow without bound.
-import type { Context } from "@deepseek-ai/cordis";
+import type { Context, Events } from "@deepseek-ai/cordis";
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import type { UserMessage } from "@deepseek-ai/dsh-llm";
 import type {
+  PostToolDecision,
   ToolExecution,
   ToolExecutionResult,
 } from "@deepseek-ai/dsh-tools";
@@ -52,8 +57,26 @@ import {
   safeErrorText,
 } from "./capture";
 import type { CaptureInput, CaptureOptions, Classified } from "./capture";
+import {
+  CapTracker,
+  FixTrust,
+  Injector,
+  SYSTEM_PROMPT_HINT,
+  SYSTEM_PROMPT_SECTION,
+  memoryTrustStore,
+  noticeSource,
+  sessionDigestText,
+} from "./inject";
+import type {
+  CapLimits,
+  InjectMode,
+  Notice,
+  NoticeSource,
+  SessionDigestMode,
+  TrustStore,
+} from "./inject";
 import { DEFAULT_MATCH_OPTIONS, indexEntries, match } from "./match";
-import type { IndexedEntry, MatchOptions } from "./match";
+import type { Hit, IndexedEntry, MatchOptions, MatchResult } from "./match";
 import type { KbFiles } from "./paths";
 import {
   DEFAULT_STORE_OPTIONS,
@@ -160,17 +183,41 @@ export interface AgentErrorPayload {
   error: unknown;
 }
 
+/** Settles with a write's outcome; never rejects. */
+export type PendingWrite = Promise<RecordOutcome>;
+
 /** Listener bodies and their bookkeeping. */
 export interface Recorder {
-  /** Classify one error now and queue its write; never throws. */
-  capture(input: CaptureInput, session?: string): void;
+  /**
+   * Classify one error now and queue its write; never throws.
+   *
+   * @returns the queued write, or undefined when nothing was captured.
+   */
+  capture(input: CaptureInput, session?: string): PendingWrite | undefined;
   /** The `agent/error` listener body; never throws. */
-  agentError(payload: AgentErrorPayload): void;
+  agentError(payload: AgentErrorPayload): PendingWrite | undefined;
   /** The `tools/result` listener body; never throws. */
   toolResult(
     exec: Readonly<ToolExecution>,
     result: Readonly<ToolExecutionResult>,
-  ): void;
+  ): PendingWrite | undefined;
+  /**
+   * Match one error against the knowledge base without writing anything (the
+   * T13 hot path). The read is queued behind every write queued before it, so
+   * an error recorded in an earlier step is already there to hit, and it runs
+   * before any write queued after it, so an error never hits its own entry.
+   * Classification is the pure part of capture: tool, command and turn errors
+   * touch no counter, and an LLM error here does not count towards its
+   * promotion.
+   *
+   * @returns the match, or undefined when the error is not captured at all or
+   *   the read failed (counted like a failed write).
+   */
+  lookup(input: CaptureInput): Promise<MatchResult | undefined>;
+  /** The indexed entries, read like lookup(); undefined when the read failed. */
+  entries(): Promise<IndexedEntry[] | undefined>;
+  /** Count a failure and log it, at most once a minute; never throws. */
+  fail(error: unknown): void;
   /** Settles once every write queued so far has finished. */
   idle(): Promise<void>;
   /** Outcomes in the order their writes finished. */
@@ -192,6 +239,13 @@ function enqueue(key: string, task: () => Promise<void>): void {
   chains.set(key, next);
   void next.then(() => {
     if (chains.get(key) === next) chains.delete(key);
+  });
+}
+
+/** Queue `task` like enqueue() and settle with its result. */
+function queued<T>(key: string, task: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve) => {
+    enqueue(key, async () => resolve(await task()));
   });
 }
 
@@ -243,6 +297,37 @@ export function commandFrom(args: unknown): string | undefined {
       return value.join(" ");
   }
   return undefined;
+}
+
+/**
+ * The capture input for one tool outcome: a failure as a tool error, anything
+ * else as command output, which classify() keeps only when it reports a
+ * non-zero exit code.
+ *
+ * @param exec - the call, for its tool name and arguments.
+ * @param result - the outcome.
+ */
+export function toolInput(
+  exec: Readonly<ToolExecution>,
+  result: Readonly<ToolExecutionResult>,
+): CaptureInput {
+  if (result.isError) {
+    const code = result.error.info?.code;
+    return {
+      kind: "tool",
+      toolName: exec.name,
+      isError: true,
+      message: result.error.message,
+      ...(code === undefined ? {} : { code }),
+    };
+  }
+  const command = commandFrom(exec.arguments);
+  return {
+    kind: "command",
+    toolName: exec.name,
+    text: resultText(result.content),
+    ...(command === undefined ? {} : { command }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +405,22 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     return index;
   }
 
+  /** Match a classified record against the index. */
+  function matchRecord(
+    record: Classified["record"],
+    index: readonly IndexedEntry[],
+  ): MatchResult {
+    return match(
+      {
+        category: record.category,
+        message: record.message,
+        ...(record.code === undefined ? {} : { code: record.code }),
+      },
+      index,
+      o,
+    );
+  }
+
   /** Bump an entry's hits and last-seen; undefined when it is gone. */
   async function bump(
     store: ErrorStore,
@@ -346,15 +447,7 @@ export function createRecorder(deps: RecorderDeps): Recorder {
         known === undefined ? undefined : await bump(store, known.entry);
       return outcome ?? { kind: "counted" };
     }
-    const found = match(
-      {
-        category: record.category,
-        message: record.message,
-        ...(record.code === undefined ? {} : { code: record.code }),
-      },
-      index,
-      o,
-    );
+    const found = matchRecord(record, index);
     if (found.matched) {
       const outcome = await bump(store, found.entry);
       if (outcome !== undefined) return outcome;
@@ -403,21 +496,42 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     else stats.timeouts++;
   }
 
-  function capture(input: CaptureInput, session = NO_SESSION): void {
+  function capture(
+    input: CaptureInput,
+    session = NO_SESSION,
+  ): PendingWrite | undefined {
     try {
       const classified = classify(input, counterFor(session), o);
-      if (classified === undefined) return;
-      enqueue(key, async () => {
+      if (classified === undefined) return undefined;
+      return queued(key, async (): Promise<RecordOutcome> => {
         try {
-          tally(await persist(classified));
+          const outcome = await persist(classified);
+          tally(outcome);
+          return outcome;
         } catch (error) {
           fail(error);
-          outcomes.push({ kind: "failed" });
+          const outcome: RecordOutcome = { kind: "failed" };
+          outcomes.push(outcome);
+          return outcome;
         }
       });
     } catch (error) {
       fail(error);
+      return undefined;
     }
+  }
+
+  /** Read the current index on the write chain; undefined on failure. */
+  function read(): Promise<IndexedEntry[] | undefined> {
+    return queued(key, async () => {
+      try {
+        return await currentIndex(createStore(deps.files, o, fs, clock));
+      } catch (error) {
+        cache = undefined;
+        fail(error);
+        return undefined;
+      }
+    });
   }
 
   return {
@@ -425,47 +539,443 @@ export function createRecorder(deps: RecorderDeps): Recorder {
 
     agentError(payload) {
       try {
-        capture({ kind: "agent", error: payload.error }, payload.agent?.id);
+        return capture(
+          { kind: "agent", error: payload.error },
+          payload.agent?.id,
+        );
       } catch (error) {
         fail(error);
+        return undefined;
       }
     },
 
     toolResult(exec, result) {
       try {
-        const session = exec.agent?.id;
-        if (result.isError) {
-          const code = result.error.info?.code;
-          capture(
-            {
-              kind: "tool",
-              toolName: exec.name,
-              isError: true,
-              message: result.error.message,
-              ...(code === undefined ? {} : { code }),
-            },
-            session,
-          );
-          return;
-        }
-        const command = commandFrom(exec.arguments);
-        capture(
-          {
-            kind: "command",
-            toolName: exec.name,
-            text: resultText(result.content),
-            ...(command === undefined ? {} : { command }),
-          },
-          session,
-        );
+        return capture(toolInput(exec, result), exec.agent?.id);
       } catch (error) {
         fail(error);
+        return undefined;
       }
     },
 
+    async lookup(input) {
+      try {
+        const classified = classify(input, new TransientCounter(), o);
+        if (classified === undefined) return undefined;
+        const index = await read();
+        return index === undefined
+          ? undefined
+          : matchRecord(classified.record, index);
+      } catch (error) {
+        fail(error);
+        return undefined;
+      }
+    },
+
+    entries: read,
+    fail,
     idle: () => settled(key),
     outcomes,
     stats,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Injection (T13)
+//
+// Four points hand what the knowledge base knows back to the model (§7). Their
+// types are read off the installed packages, through cordis `Events` as those
+// packages augment it:
+//
+// - `tools/post-execute` - a waterfall in @deepseek-ai/dsh-tools
+//   (lib/types/index.d.ts): `(exec: ToolExecution, result:
+//   Readonly<ToolExecutionResult>, next: () => Promise<PostToolDecision>)`.
+//   `PostToolDecision` is accept / accept-with-value / block, each with
+//   `additionalContexts?: UserMessage[]`, which reach the next request.
+// - `agent/pre-step` - a waterfall in @deepseek-ai/dsh-agent
+//   (lib/types/runtime-types.d.ts): `({agent, messages, turn, step, signal},
+//   next: () => Promise<PreStepDecision>)`, where `PreStepDecision` is
+//   `{kind: 'reject'} | {kind: 'enter', messages: UserMessage[]}`.
+// - `agent/session-start` - an emit in the same file: `({agent, source})`;
+//   `Agent.inject(message: UserMessage)` queues context for the next pre-step.
+// - `ctx.systemPrompt.section(section: PromptSection)` - `SystemPrompt` in
+//   @deepseek-ai/dsh-system-prompt (lib/types/index.d.ts), `{name, order,
+//   text}`; it throws on a duplicate name.
+//
+// Messages are built with dsh-llm's `createUserMessage` (lib/types/message.d.ts)
+// from one `TextBlock` and the notice's `MessageSourceMap['plugin']` source.
+//
+// Both waterfalls `await next()` first and return what it returned, with only
+// our message appended: `additionalContexts` or `messages` grow, nothing else
+// changes, and with nothing to add the downstream object itself comes back. A
+// failure of ours returns it unchanged; a rejection from `next()` is not ours
+// and passes through.
+//
+// The hot path. A tool failure is matched inside `tools/post-execute`: the
+// recorder's lookup() classifies it (pure for tool and command input) and reads
+// the cached index, queued behind earlier writes so last step's new entry is
+// there to hit. The write itself still happens later, off the turn, from
+// `tools/result`. A miss under `inject: 'always'` therefore has no ID inside
+// the hook; instead of guessing one or saying "pending", that notice waits for
+// the write and rides the next `agent/pre-step`, when `recorded as E-00NN`
+// can name the real ID. If the write has not settled by then it waits for the
+// step after; if it fails, nothing is said.
+//
+// A turn error (`agent/error`) kills its turn, so its notice cannot ride
+// `additionalContexts`. It is looked up as it is captured - the read queued
+// ahead of its own write - and offered when the next step opens, appended to
+// that step's entry messages (§7). LLM request failures reach this path only
+// when they end the turn as an `agent/error`; `agent/request-error` is T16.
+//
+// Per-session state, keyed by `Agent.id` and bounded to the {@link
+// MAX_SESSIONS} most recently active sessions like the transient counters:
+// one Injector, so one CapTracker, and the pending pre-step notices. The
+// boundaries come from `agent/pre-step`, the only hook that carries both
+// numbers: a `turn` different from the last one seen calls beginTurn(), and
+// every pre-step calls beginStep(). The tool calls of a step run after its
+// pre-step, so their notices count against that step. `agent/session-start`
+// starts a session's state afresh, since `clear` and `compact` begin a new
+// lifecycle on the same agent. A tool call without `exec.agent` has nobody to
+// read its context and is never injected.
+//
+// Fix trust is one FixTrust per plugin instance over an injectable TrustStore
+// (memory until state.json exists), scoped per session, so a recurrence is
+// counted only within the session and turn that injected the fix.
+
+/** Pending pre-step notices kept per session; the oldest goes first. */
+export const MAX_PENDING = 4;
+
+/** Injection settings; every one has a default. */
+export interface InjectionOptions {
+  inject: InjectMode;
+  sessionDigest: SessionDigestMode;
+  systemPromptHint: boolean;
+}
+
+export const DEFAULT_INJECTION_OPTIONS: InjectionOptions = {
+  inject: "hit-only",
+  sessionDigest: "counts",
+  systemPromptHint: true,
+};
+
+/** Everything the injection layer needs. */
+export interface InjectionDeps {
+  recorder: Recorder;
+  options?: Partial<InjectionOptions>;
+  /** Where fix trust lives; memory by default. */
+  trust?: TrustStore;
+  /** Lower notice budgets, for every session. */
+  caps?: Partial<CapLimits>;
+}
+
+/** `agent/pre-step`'s payload, as dsh-agent declares it. */
+export type PreStepPayload = Parameters<Events["agent/pre-step"]>[0];
+
+/** `PreStepDecision` from dsh-agent, through the event's return type. */
+export type PreStepDecision = Awaited<ReturnType<Events["agent/pre-step"]>>;
+
+/** `agent/session-start`'s payload, as dsh-agent declares it. */
+export type SessionStartPayload = Parameters<Events["agent/session-start"]>[0];
+
+/** `PromptSection` from dsh-system-prompt, through `SystemPrompt.section`. */
+export type PromptSection = Parameters<Context["systemPrompt"]["section"]>[0];
+
+/** The listener bodies of the four injection points. */
+export interface Injection {
+  readonly options: InjectionOptions;
+  readonly trust: FixTrust;
+  /** `agent/error`: record, and queue the notice for the next step. */
+  agentError(payload: AgentErrorPayload): void;
+  /** `tools/result`: record, and route a miss's new ID to the next step. */
+  toolResult(
+    exec: Readonly<ToolExecution>,
+    result: Readonly<ToolExecutionResult>,
+  ): void;
+  /** `tools/post-execute`: the downstream decision plus a notice. */
+  postExecute(
+    exec: Readonly<ToolExecution>,
+    result: Readonly<ToolExecutionResult>,
+    next: () => Promise<PostToolDecision>,
+  ): Promise<PostToolDecision>;
+  /** `agent/pre-step`: the downstream decision plus a pending notice. */
+  preStep(
+    payload: PreStepPayload,
+    next: () => Promise<PreStepDecision>,
+  ): Promise<PreStepDecision>;
+  /** `agent/session-start`: fresh session state and the digest. */
+  sessionStart(payload: SessionStartPayload): Promise<void>;
+  /** The system-prompt section, or undefined under `systemPromptHint: false`. */
+  section(): PromptSection | undefined;
+}
+
+/** One notice waiting for the next step. */
+interface Pending {
+  /** The lookup; a read, so the next step waits for it. */
+  read: Promise<void>;
+  hit?: Hit;
+  /** The lookup missed and `inject: 'always'` wants the new ID announced. */
+  miss: boolean;
+  /** The write settled; `id` is set when it appended an entry. */
+  written: boolean;
+  id?: string;
+}
+
+interface SessionState {
+  injector: Injector;
+  turn: number | undefined;
+  pending: Pending[];
+}
+
+/** A user message carrying `text`, attributed to the plugin. */
+function pluginMessage(text: string, source: NoticeSource): UserMessage {
+  return createUserMessage({ content: [{ type: "text", text }], source });
+}
+
+/**
+ * A hit whose hit count includes the occurrence being reported: the store is
+ * about to add it, and "known (1 hit)" for the second sighting would undersell.
+ */
+function counted(hit: Hit): Hit {
+  return { ...hit, entry: { ...hit.entry, hits: hit.entry.hits + 1 } };
+}
+
+/**
+ * Bind the four injection points to a recorder.
+ *
+ * @param deps - the recorder, settings, trust store and caps.
+ * @returns listener bodies that never throw into a turn.
+ */
+export function createInjection(deps: InjectionDeps): Injection {
+  const o: InjectionOptions = { ...DEFAULT_INJECTION_OPTIONS, ...deps.options };
+  const { recorder } = deps;
+  const trust = new FixTrust(deps.trust ?? memoryTrustStore());
+  const sessions = new Map<string, SessionState>();
+  // A tool miss whose write will name the ID, keyed by the execution object
+  // that `tools/post-execute` and `tools/result` both receive (the registry
+  // freezes it in place before `tools/result`; identity is kept).
+  const awaitingId = new WeakMap<object, SessionState>();
+  const injecting = o.inject !== "off";
+
+  /** This session's state, kept among the most recently active ones. */
+  function stateFor(session: string, fresh = false): SessionState {
+    const state = (!fresh && sessions.get(session)) || {
+      injector: new Injector({
+        mode: o.inject,
+        caps: new CapTracker(deps.caps),
+        trust,
+        scope: session,
+      }),
+      turn: undefined,
+      pending: [],
+    };
+    sessions.delete(session);
+    sessions.set(session, state);
+    if (sessions.size > MAX_SESSIONS)
+      sessions.delete(sessions.keys().next().value as string);
+    return state;
+  }
+
+  /** Queue a notice for the next step; never rejects. */
+  function track(
+    state: SessionState,
+    item: Pending,
+    write: PendingWrite | undefined,
+  ): void {
+    if (write !== undefined)
+      void write.then((outcome) => {
+        item.written = true;
+        if (outcome.kind === "appended") item.id = outcome.id;
+      });
+    else item.written = true;
+    state.pending.push(item);
+    if (state.pending.length > MAX_PENDING) state.pending.shift();
+  }
+
+  /** Look a tool outcome up and offer it; never rejects. */
+  async function toolNotice(
+    exec: Readonly<ToolExecution>,
+    result: Readonly<ToolExecutionResult>,
+    state: SessionState,
+  ): Promise<Notice | undefined> {
+    const found = await recorder.lookup(toolInput(exec, result));
+    try {
+      if (found === undefined) return undefined;
+      if (found.matched)
+        return state.injector.offer({ kind: "hit", hit: counted(found) });
+      if (o.inject === "always") awaitingId.set(exec, state);
+      return undefined;
+    } catch (error) {
+      recorder.fail(error);
+      return undefined;
+    }
+  }
+
+  /** The first pending notice the caps allow; the rest are dropped. */
+  async function drain(state: SessionState): Promise<Notice | undefined> {
+    const items = state.pending.slice();
+    await Promise.all(items.map((item) => item.read));
+    const kept: Pending[] = [];
+    let notice: Notice | undefined;
+    for (const item of items) {
+      if (item.hit !== undefined) {
+        notice ??= state.injector.offer({ kind: "hit", hit: item.hit }, true);
+      } else if (item.miss && !item.written) {
+        kept.push(item);
+      } else if (item.id !== undefined) {
+        notice ??= state.injector.offer({ kind: "miss", id: item.id });
+      }
+    }
+    state.pending = state.pending.filter(
+      (item) => !items.includes(item) || kept.includes(item),
+    );
+    return notice;
+  }
+
+  return {
+    options: o,
+    trust,
+
+    agentError(payload) {
+      try {
+        const session = payload.agent?.id;
+        if (!injecting || session === undefined) {
+          recorder.agentError(payload);
+          return;
+        }
+        const state = stateFor(session);
+        // Queued before the write, so the error cannot hit its own new entry.
+        const found = recorder.lookup({ kind: "agent", error: payload.error });
+        const write = recorder.agentError(payload);
+        const item: Pending = {
+          read: Promise.resolve(),
+          miss: false,
+          written: false,
+        };
+        item.read = found.then((result) => {
+          try {
+            if (result === undefined) return;
+            if (!result.matched) {
+              item.miss = o.inject === "always";
+              return;
+            }
+            state.injector.observe(result);
+            item.hit = counted(result);
+          } catch (error) {
+            recorder.fail(error);
+          }
+        });
+        track(state, item, write);
+      } catch (error) {
+        recorder.fail(error);
+      }
+    },
+
+    toolResult(exec, result) {
+      try {
+        const write = recorder.toolResult(exec, result);
+        const state = awaitingId.get(exec);
+        if (state === undefined) return;
+        awaitingId.delete(exec);
+        track(
+          state,
+          { read: Promise.resolve(), miss: true, written: false },
+          write,
+        );
+      } catch (error) {
+        recorder.fail(error);
+      }
+    },
+
+    async postExecute(exec, result, next) {
+      let pending: Promise<Notice | undefined> | undefined;
+      try {
+        const session = exec.agent?.id;
+        if (injecting && session !== undefined)
+          pending = toolNotice(exec, result, stateFor(session));
+      } catch (error) {
+        recorder.fail(error);
+      }
+      const decision = await next();
+      if (pending === undefined) return decision;
+      try {
+        const notice = await pending;
+        if (notice === undefined) return decision;
+        return {
+          ...decision,
+          additionalContexts: [
+            ...(decision.additionalContexts ?? []),
+            pluginMessage(notice.text, notice.source),
+          ],
+        };
+      } catch (error) {
+        recorder.fail(error);
+        return decision;
+      }
+    },
+
+    async preStep(payload, next) {
+      let state: SessionState | undefined;
+      try {
+        state = stateFor(payload.agent.id);
+        if (state.turn !== payload.turn) {
+          state.turn = payload.turn;
+          state.injector.beginTurn();
+        }
+        state.injector.beginStep();
+      } catch (error) {
+        recorder.fail(error);
+      }
+      const decision = await next();
+      if (
+        state === undefined ||
+        decision.kind !== "enter" ||
+        state.pending.length === 0
+      )
+        return decision;
+      try {
+        const notice = await drain(state);
+        if (notice === undefined) return decision;
+        return {
+          ...decision,
+          messages: [
+            ...decision.messages,
+            pluginMessage(notice.text, notice.source),
+          ],
+        };
+      } catch (error) {
+        recorder.fail(error);
+        return decision;
+      }
+    },
+
+    async sessionStart({ agent }) {
+      try {
+        stateFor(agent.id, true);
+        if (o.sessionDigest === "off") return;
+        const index = await recorder.entries();
+        if (index === undefined) return;
+        const text = sessionDigestText(
+          index.map(({ entry, excluded }) => ({
+            id: entry.id,
+            title: entry.title,
+            hits: entry.hits,
+            injectable: excluded === undefined,
+          })),
+          o.sessionDigest,
+        );
+        if (text === undefined) return;
+        const head = text.split("\n", 1)[0] as string;
+        agent.inject(pluginMessage(text, noticeSource(head)));
+      } catch (error) {
+        recorder.fail(error);
+      }
+    },
+
+    section() {
+      return o.systemPromptHint
+        ? { ...SYSTEM_PROMPT_SECTION, text: SYSTEM_PROMPT_HINT }
+        : undefined;
+    },
   };
 }
 
@@ -475,9 +985,12 @@ export function createRecorder(deps: RecorderDeps): Recorder {
 /** The part of a cordis Context the wiring uses. */
 export type ListenerHost = Pick<Context, "on">;
 
+/** The part of a cordis Context the injection points use. */
+export type InjectionHost = Pick<Context, "on" | "systemPrompt">;
+
 /**
- * Register the two T11 listeners. `agent/request-error` (T16) and the
- * injection points (T13) are deliberately absent.
+ * Register the two capture listeners (T11). `agent/request-error` (T16) is
+ * deliberately absent.
  *
  * @param ctx - the plugin's context.
  * @param recorder - from createRecorder().
@@ -490,4 +1003,43 @@ export function registerListeners(ctx: ListenerHost, recorder: Recorder): void {
     recorder.toolResult(exec, result);
     return undefined;
   });
+}
+
+/**
+ * Register the capture listeners routed through the injection layer, the
+ * three injection hooks and the system-prompt section (T11 + T13). A section
+ * that cannot be registered (a duplicate name) is counted and logged; the
+ * hooks still work without it.
+ *
+ * @param ctx - the plugin's context.
+ * @param injection - from createInjection().
+ * @param recorder - the recorder the injection layer was built on.
+ */
+export function registerInjection(
+  ctx: InjectionHost,
+  injection: Injection,
+  recorder: Recorder,
+): void {
+  ctx.on("agent/error", (payload) => {
+    injection.agentError(payload);
+  });
+  ctx.on("tools/result", (exec, result) => {
+    injection.toolResult(exec, result);
+    return undefined;
+  });
+  ctx.on("tools/post-execute", (exec, result, next) =>
+    injection.postExecute(exec, result, next),
+  );
+  ctx.on("agent/pre-step", (payload, next) => injection.preStep(payload, next));
+  // The promise goes back to the host: one that awaits its emit listeners
+  // gets the digest queued before the first step; one that does not still
+  // gets it at the next pre-step after the read. It never rejects.
+  ctx.on("agent/session-start", (payload) => injection.sessionStart(payload));
+  const section = injection.section();
+  if (section === undefined) return;
+  try {
+    ctx.systemPrompt.section(section);
+  } catch (error) {
+    recorder.fail(error);
+  }
 }

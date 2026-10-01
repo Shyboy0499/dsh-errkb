@@ -1,6 +1,6 @@
 # dsh-errkb
 
-![Status](https://img.shields.io/badge/status-P3%20complete-yellow)
+![Status](https://img.shields.io/badge/status-P4%20in%20progress-yellow)
 ![License](https://img.shields.io/github/license/jingchangzhao-gif/dsh-errkb)
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
 
@@ -10,25 +10,28 @@
 
 `dsh-errkb` is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) plugin that turns the errors a model hits into a numbered, human-editable knowledge base — then pushes the recorded fix back into context *before* the model starts diagnosing.
 
-> **Status: P3 complete.** The design document is written and under review —
+> **Status: P4 in progress.** The design document is written and under review —
 > six of the eight decisions in its §17 are still open (Q2 and Q4 are decided) —
 > and the work is broken into [eighteen tasks](#roadmap) across seven milestones.
-> **T01–T12 are done:** the package installs, builds, type checks, lints, formats
+> **T01–T13 are done:** the package installs, builds, type checks, lints, formats
 > and tests (with the 99% coverage gate enforced), CI runs all five on every pull
 > request, and the pure local layer is complete: knowledge-base directory
 > resolution (T05), error normalization and fingerprinting (T06), mandatory
 > redaction (T07), the `ERRORS.md` store (T08) and matching (T09). The capture
 > layer is wired: classification and the noise rule (T10), and the first two
-> hooks, `agent/error` and `tools/result` (T11). The notice text, its caps and
-> fix trust exist as pure code (T12), not wired to any hook yet.
+> hooks, `agent/error` and `tools/result` (T11). The injection layer speaks:
+> notice text, caps and fix trust (T12) are wired to the four injection points
+> (T13).
 >
-> **The plugin records, and nothing more.** Loaded into a profile, `apply`
-> logs where the knowledge base is and records tool failures, non-zero command
-> exits and turn-level errors into `ERRORS.md`. Nothing is injected into the
-> model's context yet (T13–T14), there are no agent tools (T15), LLM request
-> failures are not captured (T16), and it is not installed into any profile yet
-> (T17). Everything marked "not implemented" below is still a description of
-> the intended path.
+> **The plugin records and injects, once installed.** Loaded into a profile,
+> `apply` logs where the knowledge base is, records tool failures, non-zero
+> command exits and turn-level errors into `ERRORS.md`, and hands a recorded
+> fix back to the model when the same error repeats, within the caps below.
+> Still missing: resolution detection (T14), so a fix only exists once someone
+> writes it into `ERRORS.md`; the agent tools (T15); LLM request-failure capture
+> (T16); and installation into a profile (T17) — nothing installs it for you
+> yet. Everything marked "not implemented" below is still a description of the
+> intended path.
 >
 > - Design document: [`docs/设计说明书.md`](docs/设计说明书.md) — 19 sections, Chinese
 > - What the plugin will do: [How it works](#how-it-works)
@@ -74,8 +77,8 @@
 | `package.json`, `tsconfig.json`, `tsdown.config.ts`, `vitest.config.ts`   | ✅ In place (T01–T03)      |
 | `.prettierignore`, `.gitattributes` — format and line-ending policy       | ✅ In place                |
 | `cordis.patch.yml` — bundle patch                                         | ✅ In place (T04)          |
-| `src/index.ts` — plugin entry (`name`, `inject`, `Config`, `apply`)       | ✅ In place (T04); `apply` reads the settings and registers the `agent/error` and `tools/result` listeners (T11) |
-| `src/plugin.ts` — the capture pipeline behind those listeners             | ✅ In place (T11), 100% statements and lines |
+| `src/index.ts` — plugin entry (`name`, `inject`, `Config`, `apply`)       | ✅ In place (T04); `apply` reads the settings, registers the `agent/error` and `tools/result` listeners (T11) and the four injection points (T13) |
+| `src/plugin.ts` — the capture pipeline and the injection wiring           | ✅ In place (T11, T13), 100% statements and lines |
 | `src/paths.ts` — KB directory resolution                                  | ✅ In place (T05), 100% covered |
 | `src/signature.ts` — normalization and fingerprinting                     | ✅ In place (T06), 100% covered — used by capture and matching |
 | `src/redact.ts`, `src/redact-patterns.ts` — mandatory redaction           | ✅ In place (T07), 100% covered — applied by the store on every write |
@@ -84,10 +87,10 @@
 | `src/match.ts` — exact, fuzzy and fallback matching                       | ✅ In place (T09), 100% statements and lines — consulted before every write |
 | `src/state.ts` — `state.json`, `.machine.json`, environment fingerprint   | ⛔ Not started             |
 | `src/capture.ts` — classification, headline extraction and the noise rule | ✅ In place (T10), 100% statements and lines — called by the T11 listeners |
-| `src/inject.ts` — notice generation, hard caps and fix trust              | ✅ In place (T12), 100% statements and lines — not wired yet (T13) |
+| `src/inject.ts` — notice generation, hard caps and fix trust              | ✅ In place (T12), 100% statements and lines — wired to the four injection points (T13) |
 | `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
 | `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
-| `tests/`                                                                  | ✅ 382 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 58 and `seeds` 5 (T08), `match` 40 (T09), `capture` 67 (T10), `plugin` 34 (T11), `inject` 57 (T12) |
+| `tests/`                                                                  | ✅ 432 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 58 and `seeds` 5 (T08), `match` 40 (T09), `capture` 67 (T10), `plugin` 34 (T11), `inject` 66 (T12, T13), `injection` 41 (T13) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -102,11 +105,11 @@ For a failure you see once, that is fine. For a failure you see every week — a
 ## Features
 
 > **Designed, mostly not implemented.** Everything below is specified in the
-> design document and covered by a test plan. Only recording runs yet: stable
-> IDs, one ID per error and mandatory redaction apply to what the T11 listeners
-> write. Injection is not wired (its notice text and caps exist, T12), and the
-> tools and the ledger do not exist yet — see
-> [What works today](#what-works-today).
+> design document and covered by a test plan. Recording and injection run:
+> stable IDs, one ID per error and mandatory redaction apply to what the T11
+> listeners write, and a recorded fix is injected before diagnosis (T13). Fixes
+> are not detected automatically yet (T14), and the tools and the ledger do not
+> exist yet — see [What works today](#what-works-today).
 
 | Behaviour                     | Detail                                                                          |
 | ----------------------------- | ------------------------------------------------------------------------------- |
@@ -254,10 +257,10 @@ One entry, in the default English labels, with machine fields carried in an HTML
 
 | Situation                                  | Injection point                                                       | What arrives                                                                 |
 | ------------------------------------------ | --------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| A tool or command failed in this step      | `tools/post-execute` → `additionalContexts`                           | Hit: the known fix. Miss: `recorded as E-0011 (no fix yet).`                 |
-| An LLM call failed and the turn is already dead | The next `agent/pre-step` → `{kind: 'enter', messages}`         | The notice for the entry that matches the failed step                        |
+| A tool or command failed in this step      | `tools/post-execute` → `additionalContexts`                           | Hit: the known fix. Miss under `inject: 'always'`: `recorded as E-0011 (no fix yet).`, on the next step (see below) |
+| The turn died (an LLM or turn failure reported as `agent/error`) | The next `agent/pre-step` → `{kind: 'enter', messages}` | The notice for the entry that matches the failed step, appended after the step's own messages |
 | Session opens                              | `agent/session-start` → `agent.inject()`                              | Whatever `sessionDigest` says: `off`, `counts` (one line), or `index` (up to 10 entry titles) |
-| Always                                     | `ctx.systemPrompt.section({name: 'plugin:errkb', order: 10400})`      | ~50 tokens of standing behaviour: check the KB first, record new fixes        |
+| Always                                     | `ctx.systemPrompt.section({name: 'plugin:errkb', order: 10400})`      | ~50 tokens of standing behaviour: try a known fix before re-diagnosing, state new fixes |
 
 On a hit the model does not receive a report — it receives an instruction, capped at 120 tokens:
 
@@ -282,7 +285,16 @@ re-diagnosing or researching.
 
 **A fix that does not work stops being pushed** ([`docs/discussions.md`](docs/discussions.md) §4). When the same entry is captured again later in the turn that injected its fix, that counts as a recurrence: after one, the notice changes to "This fix failed here last time; verify before applying."; after two with no recorded success, the entry is not injected on this machine any more. Editing the entry's fix starts the count again. The counters are machine-local and never touch `ERRORS.md`; for now they live in memory, and they move to `state.json` with `src/state.ts`.
 
-Every cap is configurable downwards, and `inject: 'off'` turns injection off entirely while capture keeps recording.
+Every cap is configurable downwards, and `inject: 'off'` stops every notice while capture keeps recording. The session digest and the standing section have their own switches, `sessionDigest: 'off'` and `systemPromptHint: false`.
+
+**How the four points are wired (T13).** The hook types are read off the installed packages: `tools/post-execute` (`PostToolDecision.additionalContexts`, `@deepseek-ai/dsh-tools`), `agent/pre-step` (`PreStepDecision`, `{kind: 'enter', messages}`), `agent/session-start` and `Agent.inject()` (`@deepseek-ai/dsh-agent`), and `SystemPrompt.section()` (`PromptSection`, `@deepseek-ai/dsh-system-prompt`). Both waterfalls `await next()` and return the downstream result with one message appended; with nothing to add, or when anything of ours fails, the downstream object itself comes back.
+
+- **The hot path reads, the write stays off the turn.** A tool failure is classified and matched inside `tools/post-execute` against the cached index; the write still happens afterwards from `tools/result`. The read waits behind writes already queued, so an error recorded in the previous step is there to hit.
+- **A miss's ID is announced only once it exists.** Inside the hook the new ID is not assigned yet, so under `inject: 'always'` the miss notice is not guessed or worded as "pending": it rides the next `agent/pre-step`, once the write has named the ID, and says nothing if the write fails.
+- **A dead turn's notice rides the next step.** A turn error is looked up as it is captured and appended to the next step's entry messages. LLM request failures reach this path only when they end the turn as an `agent/error`; `agent/request-error` itself is T16.
+- **Per-session budgets.** One cap tracker per session (`Agent.id`), for the 64 most recently active sessions. A new `turn` number at `agent/pre-step` starts a turn, every pre-step starts a step, and `agent/session-start` (including `clear` and `compact`) starts the session's budgets afresh. A tool call without an agent is never injected.
+- **The digest** under `counts` is one line, `[errkb] 37 known errors; known fixes are shown when an error repeats.`; `index` adds up to 10 of the most-hit entries, `wontfix` and misjudged ones left out. An empty knowledge base gets no digest.
+- **The standing section** is, verbatim: `Errors are tracked by the errkb plugin. A context line starting with [errkb] names a known error and, when one is recorded, its fix: try that fix before re-diagnosing. When you resolve an error that has no recorded fix, state the fix in one short sentence.` It does not mention `err_record`, which does not exist until T15; T15 points its last sentence at the tool.
 
 ## Cost model
 
@@ -391,8 +403,8 @@ Settings live in the profile patch, not in a separate config file:
 | `transientThreshold` | `5`                                | Occurrences before a transient LLM error earns an ID                                            |
 | `fuzzyThreshold`     | `0.72`                             | Similarity needed for a fuzzy match (range 0.5–1.0)                                             |
 | `captureFix`         | `'prompt-once'`                    | `prompt-once` or `off`: ask the model once to write a fix for a new entry                        |
-| `inject`             | `'hit-only'`                       | `hit-only`, `always` or `off`                                                                   |
-| `sessionDigest`      | `'counts'`                         | Session-opening digest: `off`, `counts` or `index` (at most 10 entries)                          |
+| `inject`             | `'hit-only'`                       | `hit-only`, `always` or `off`; any other value falls back to `hit-only`                         |
+| `sessionDigest`      | `'counts'`                         | Session-opening digest: `off`, `counts` or `index` (at most 10 entries); any other value falls back to `counts` |
 | `systemPromptHint`   | `true`                             | The 50-token behavioural section                                                                |
 | `providers`          | `['*']`                            | Restrict which providers are recorded (e.g. `deepseek-official`)                                 |
 | `share`              | `'public'`                         | Redaction strength — `public` or `private` ([details](#privacy-and-redaction))                   |
@@ -492,13 +504,14 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 | ✅    | T01–T09 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), paths, signature, redact, store and match |
 | ✅    | T10 — classification, headline extraction and the transient-noise rule                  |
 | ✅    | T11 — the first two hooks: `agent/error` and `tools/result`                             |
-| ✅    | T12 — notice text, hard caps and fix trust (pure; not wired yet)                        |
-| 🔜    | T13–T14 — the rest of the injection layer: four injection points, resolution detection  |
+| ✅    | T12 — notice text, hard caps and fix trust                                              |
+| ✅    | T13 — the four injection points                                                         |
+| 🔜    | T14 — resolution detection, the last of the injection layer                             |
 | 🔜    | T15 — the five agent tools                                                              |
 | 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
 | 🔜    | T18 — optional: Obsidian export                                                         |
 
-T01–T12 are checked off. T01–T10 are merged upstream; T11 and T12 are not yet. The rest are open; T18 can be dropped at any point without touching the main line.
+T01–T13 are checked off. T01–T10 are merged upstream; T11–T13 are not yet. The rest are open; T18 can be dropped at any point without touching the main line.
 
 ### Milestone mapping
 
@@ -510,7 +523,7 @@ The design document plans in phases P0–P7 (§15); the task list numbers the sa
 | P1             | T01–T04 | ✅ `pnpm typecheck` passes — verified locally and in CI                       |
 | P2             | T05–T09 | ✅ Unit tests green; every T05–T09 module at 100% statements and lines |
 | P3             | T10–T11 | ✅ A guaranteed-failing command produces `E-0001` — shown end to end against a temporary knowledge base; the 99% gate now runs in `pnpm test` |
-| P4             | T12–T14 | A repeated failure is injected and the model stops re-diagnosing — T12 (notices and caps) is done, T13–T14 are open |
+| P4             | T12–T14 | A repeated failure is injected and the model stops re-diagnosing — T12 (notices and caps) and T13 (the four injection points) are done, T14 is open |
 | P5             | T15     | The model can call `err_lookup` and `err_record`                             |
 | P6             | T16–T17 | `--dump-config` shows the entry; one cloud and one local error are each recorded |
 | P7 (optional)  | T18     | The exported file is readable                                                |
@@ -538,7 +551,7 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 | ☑ T10 | Classify, and suppress noise           | `src/capture.ts`                                                             | Transient errors get no ID until the threshold; capture off writes nothing                           |
 | ☑ T11 | Wire the first two hooks               | `agent/error`, `tools/result` listeners                                      | A guaranteed-failing command produces `E-0001`                                                       |
 | ☑ T12 | Generate notices                       | `src/inject.ts` — template, caps, dedup                                      | Caps hold; source shape and summary length are exact                                                 |
-| ☐ T13 | Wire the four injection points         | `tools/post-execute`, `agent/pre-step`, `agent/session-start`, system prompt | A repeated failure is injected, and the model stops re-diagnosing                                    |
+| ☑ T13 | Wire the four injection points         | `tools/post-execute`, `agent/pre-step`, `agent/session-start`, system prompt | A repeated failure is injected, and the model stops re-diagnosing                                    |
 | ☐ T14 | Detect resolution                      | `src/resolve-detect.ts`                                                      | A `fixed` entry goes silent after one notice                                                         |
 | ☐ T15 | Build the five tools                   | `src/tools.ts`                                                               | The model can call `err_lookup` and `err_record`                                                     |
 | ☐ T16 | Listen to `agent/request-error`        | The listener, plus LLM failure classification                                | The returned value is object-identical to the downstream result                                      |
@@ -569,7 +582,7 @@ The test plan is §14 of the design document. Coverage gate: statements and line
 4. `store` — write/parse round-trip identity; hand-edited fixes read back; a corrupt file takes the save-aside + append-only path; the archive threshold fires; IDs increase monotonically; **50 concurrent records yield 50 unique IDs and a still-parseable document**.
 5. `capture` — four payload classes classified correctly; transient rate limits uncounted until the threshold; every capture toggle off means zero writes.
 6. `inject` — text length caps, ≤ 1 notice per step, ≤ 3 per turn, source shape `{kind:'plugin',plugin:'err-kb',form:'notice',summary}` with `summary` ≤ 120 characters. In `tests/inject.test.ts` (T12), together with a CJK-heavy fix, ≤ 2 notices per ID per session, a `fixed` entry speaking once, the near-hit and miss wordings under each `inject` mode, silent non-injectable entries, and the fix-trust wording change and stop at two recurrences.
-7. `plugin` — a fake context confirms listeners are registered, exceptions are swallowed, and the `agent/request-error` return value is identical (object identity asserted) to the downstream result. The first two parts are in `tests/plugin.test.ts` (T11), along with a failing command producing `E-0001` and a repeat bumping it; the `agent/request-error` part arrives with T16.
+7. `plugin` — a fake context confirms listeners are registered, exceptions are swallowed, and the `agent/request-error` return value is identical (object identity asserted) to the downstream result. The first two parts are in `tests/plugin.test.ts` (T11), along with a failing command producing `E-0001` and a repeat bumping it; the `agent/request-error` part arrives with T16. `tests/injection.test.ts` (T13) plays the host for the four injection points: a repeated failure gets its known fix in `additionalContexts` within the caps, a dead turn's notice rides the next `agent/pre-step`, each `sessionDigest` mode, the section present or absent with `systemPromptHint`, `inject: 'off'` silent while capture records, and both waterfalls returning the downstream result untouched (object identity asserted), including when our internals throw.
 
 The concurrency test in group 4 is the one that matters most, because it is the failure mode that would corrupt the only authoritative file.
 

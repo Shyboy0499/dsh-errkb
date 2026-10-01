@@ -48,10 +48,17 @@ function fakeCtx() {
     (...args: unknown[]) => {
       logs.push({ level, args });
     };
+  const sections: unknown[] = [];
   const ctx = {
     on(name: string, listener: Listener) {
       listeners.set(name, [...(listeners.get(name) ?? []), listener]);
       return () => true;
+    },
+    systemPrompt: {
+      section(section: unknown) {
+        sections.push(section);
+        return () => undefined;
+      },
     },
     logger: {
       info: log("info"),
@@ -146,15 +153,17 @@ function recorder(over: Partial<RecorderDeps> = {}) {
 // apply(): registration and end-to-end
 
 describe("apply: registration", () => {
-  it("registers exactly the two T11 listeners and logs the directory", () => {
+  it("registers the T11 listeners and the T13 hooks, not T16's, and logs the directory", () => {
     const fake = fakeCtx();
     apply(fake.ctx, Config({ kbDir: dir }));
     expect([...fake.listeners.keys()].sort()).toEqual([
       "agent/error",
+      "agent/pre-step",
+      "agent/session-start",
+      "tools/post-execute",
       "tools/result",
     ]);
     expect(fake.listeners.has("agent/request-error")).toBe(false);
-    expect(fake.listeners.has("tools/post-execute")).toBe(false);
     expect(fake.logs).toHaveLength(1);
     expect(fake.logs[0]?.level).toBe("info");
     expect(String(fake.logs[0]?.args[0])).toContain(dir);

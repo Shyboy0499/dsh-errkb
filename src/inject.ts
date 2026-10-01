@@ -445,6 +445,9 @@ export function trustLevel(record: TrustRecord | undefined): TrustLevel {
  */
 export class FixTrust {
   private state: TrustState;
+  // `<scope>\0<id>` for every fix injected in its scope's current turn. The
+  // scope is the session (T13), so one session's new turn does not forget
+  // another session's injections.
   private readonly injectedThisTurn = new Set<string>();
 
   constructor(private readonly store: TrustStore = memoryTrustStore()) {
@@ -462,25 +465,33 @@ export class FixTrust {
     return trustLevel(this.record(id, fix));
   }
 
-  /** A new turn: recurrence is counted within one turn. */
-  beginTurn(): void {
-    this.injectedThisTurn.clear();
+  /**
+   * A new turn in `scope`: recurrence is counted within one turn.
+   *
+   * @param scope - the session whose turn began; the default scope serves a
+   *   caller with one session.
+   */
+  beginTurn(scope = ""): void {
+    const prefix = `${scope}\0`;
+    for (const key of this.injectedThisTurn)
+      if (key.startsWith(prefix)) this.injectedThisTurn.delete(key);
   }
 
   /**
    * A captured error matched `id`. If its fix was injected earlier in this
-   * turn, the fix did not hold: count a recurrence.
+   * turn of the same scope, the fix did not hold: count a recurrence.
    */
-  seen(id: string, fix: string): void {
+  seen(id: string, fix: string, scope = ""): void {
+    const key = `${scope}\0${id}`;
     const record = this.record(id, fix);
-    if (record === undefined || !this.injectedThisTurn.has(id)) return;
+    if (record === undefined || !this.injectedThisTurn.has(key)) return;
     record.recurredAfterInject++;
-    this.injectedThisTurn.delete(id);
+    this.injectedThisTurn.delete(key);
     this.store.save(this.state);
   }
 
-  /** A notice carried `id`'s fix. */
-  injected(id: string, fix: string): void {
+  /** A notice carried `id`'s fix, in `scope`'s current turn. */
+  injected(id: string, fix: string, scope = ""): void {
     const record = this.record(id, fix) ?? {
       injected: 0,
       recurredAfterInject: 0,
@@ -489,7 +500,7 @@ export class FixTrust {
     };
     record.injected++;
     this.state.entries[id] = record;
-    this.injectedThisTurn.add(id);
+    this.injectedThisTurn.add(`${scope}\0${id}`);
     this.store.save(this.state);
   }
 
@@ -515,6 +526,8 @@ export interface InjectorDeps {
   mode?: InjectMode;
   caps?: CapTracker;
   trust?: FixTrust;
+  /** The session, which scopes fix-trust recurrence when trust is shared. */
+  scope?: string;
 }
 
 /**
@@ -525,16 +538,18 @@ export class Injector {
   readonly mode: InjectMode;
   readonly caps: CapTracker;
   readonly trust: FixTrust;
+  readonly scope: string;
 
   constructor(deps: InjectorDeps = {}) {
     this.mode = deps.mode ?? "hit-only";
     this.caps = deps.caps ?? new CapTracker();
     this.trust = deps.trust ?? new FixTrust();
+    this.scope = deps.scope ?? "";
   }
 
   beginTurn(): void {
     this.caps.beginTurn();
-    this.trust.beginTurn();
+    this.trust.beginTurn(this.scope);
   }
 
   beginStep(): void {
@@ -542,12 +557,23 @@ export class Injector {
   }
 
   /**
+   * Tell fix trust that a captured error matched `hit`, without offering a
+   * notice yet. For a notice that rides a later step (T13: a dead turn's
+   * error): the capture is observed when it happens, the notice offered when
+   * the next step opens, with `observed` set.
+   */
+  observe(hit: Hit): void {
+    this.trust.seen(hit.id, hit.entry.fix, this.scope);
+  }
+
+  /**
    * Offer a captured error.
    *
    * @param event - the hit or the miss.
+   * @param observed - observe() already saw this hit; do not count it again.
    * @returns the notice to inject, or undefined to stay silent.
    */
-  offer(event: NoticeEvent): Notice | undefined {
+  offer(event: NoticeEvent, observed = false): Notice | undefined {
     if (this.mode === "off") return undefined;
     if (event.kind === "miss") {
       if (this.mode !== "always" || !this.caps.tryEmit(event.id))
@@ -556,13 +582,13 @@ export class Injector {
     }
 
     const { id, entry, injectable } = event.hit;
-    this.trust.seen(id, entry.fix);
+    if (!observed) this.observe(event.hit);
     if (!injectable) return undefined;
     const carriesFix = oneLine(entry.fix) !== "";
     const level = carriesFix ? this.trust.level(id, entry.fix) : "trusted";
     if (level === "suppressed") return undefined;
     if (!this.caps.tryEmit(id, entry.status === "fixed")) return undefined;
-    if (carriesFix) this.trust.injected(id, entry.fix);
+    if (carriesFix) this.trust.injected(id, entry.fix, this.scope);
     return notice(id, noticeText(event, level));
   }
 }
@@ -573,3 +599,76 @@ function notice(
 ): Notice {
   return { id, kind, text, source: noticeSource(text) };
 }
+
+// ---------------------------------------------------------------------------
+// Standing text: the session digest and the system-prompt section (T13)
+
+/** Values of the `sessionDigest` setting. */
+export const SESSION_DIGEST_MODES = ["off", "counts", "index"] as const;
+
+/** `off` says nothing; `counts` one line; `index` adds up to 10 titles. */
+export type SessionDigestMode = (typeof SESSION_DIGEST_MODES)[number];
+
+/** The most entry titles an `index` digest lists (§7). */
+export const DIGEST_MAX_TITLES = 10;
+
+/** Each title in an `index` digest is clipped to this many characters. */
+export const DIGEST_TITLE_MAX_CHARS = 80;
+
+/** What a digest needs to know about one entry. */
+export interface DigestEntry {
+  id: string;
+  title: string;
+  hits: number;
+  /** False for a `wontfix` or misjudged entry, which an index leaves out. */
+  injectable: boolean;
+}
+
+/**
+ * The session-opening digest (§7), or undefined when there is nothing to say:
+ * the mode is `off`, or the knowledge base has no entries.
+ *
+ * `counts` is one line of about 20 tokens:
+ * `[errkb] 37 known errors; known fixes are shown when an error repeats.`
+ * `index` adds the most-hit injectable entries, at most
+ * {@link DIGEST_MAX_TITLES}, one per line, ties broken by document order.
+ *
+ * @param entries - the knowledge base's entries, in document order.
+ * @param mode - the `sessionDigest` setting.
+ */
+export function sessionDigestText(
+  entries: readonly DigestEntry[],
+  mode: SessionDigestMode,
+): string | undefined {
+  if (mode === "off" || entries.length === 0) return undefined;
+  const n = entries.length;
+  const head = `[errkb] ${n} known ${n === 1 ? "error" : "errors"}; known fixes are shown when an error repeats.`;
+  if (mode === "counts") return head;
+  const top = entries
+    .map((entry, order) => ({ entry, order }))
+    .filter(({ entry }) => entry.injectable)
+    .sort((a, b) => b.entry.hits - a.entry.hits || a.order - b.order)
+    .slice(0, DIGEST_MAX_TITLES)
+    .map(
+      ({ entry }) =>
+        `${entry.id} ${clip(oneLine(entry.title), DIGEST_TITLE_MAX_CHARS)} (${hitsText(entry.hits)})`,
+    );
+  return top.length === 0
+    ? head
+    : [`${head} Most frequent:`, ...top].join("\n");
+}
+
+/** The system-prompt section's name and position (§7). */
+export const SYSTEM_PROMPT_SECTION = {
+  name: "plugin:errkb",
+  order: 10400,
+} as const;
+
+/**
+ * The standing guidance, about 50 tokens (§7). It names no tool: `err_record`
+ * arrives with T15, and a prompt that pointed at a missing tool would send the
+ * model looking for it. Until then it asks for the fix in one plain sentence, so
+ * at least the transcript holds it; T15 points the last sentence at the tool. No `{{variable}}` references: the text is rendered as is.
+ */
+export const SYSTEM_PROMPT_HINT =
+  "Errors are tracked by the errkb plugin. A context line starting with [errkb] names a known error and, when one is recorded, its fix: try that fix before re-diagnosing. When you resolve an error that has no recorded fix, state the fix in one short sentence.";
