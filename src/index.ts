@@ -16,11 +16,14 @@ export const name = "err-kb";
 // backs the standing section registered in T13.
 export const inject = ["tools", "systemPrompt"];
 
-// Declared, not consumed - T04 reads no setting at all. Every default mirrors
+// Declared, not consumed - apply() reads no setting yet. Every default mirrors
 // the Settings table in README.md item for item. The documented value sets
 // (captureFix: prompt-once|off, inject: hit-only|always|off, sessionDigest:
 // off|counts|index, share: public|private) are not enforced yet; validation
-// tightens when the settings are actually read in T10-T16.
+// tightens when the settings are actually read in T10-T16. `labels` is the
+// exception: it is new, so it starts out as the union it documents (§17 Q2).
+// The store reads both label sets whatever this says; it only decides the
+// language of blocks it writes.
 export const Config = z.object({
   kbDir: z.string().default(""),
   idPrefix: z.string().default("E-"),
@@ -38,6 +41,7 @@ export const Config = z.object({
   maxEntries: z.number().default(200),
   maxSampleChars: z.number().default(500),
   exportDir: z.string().default(""),
+  labels: z.union(["en", "zh"]).default("en"),
 });
 
 // The whole behaviour of this task: one startup line, now carrying the resolved

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -293,17 +293,13 @@ describe("committed seeds", () => {
     fileURLToPath(new URL("..", import.meta.url)),
     "seeds",
   );
-  const seeds = existsSync(seedsDir)
-    ? readdirSync(seedsDir).filter((name) => name.endsWith(".md"))
-    : [];
+  const seeds = readdirSync(seedsDir).filter((name) => name.endsWith(".md"));
 
-  it.skipIf(seeds.length === 0)(
-    "every seeds/*.md is unchanged by redact()",
-    () => {
-      for (const name of seeds) {
-        const text = readFileSync(join(seedsDir, name), "utf8");
-        expect(redact(text, { share: "public" }), name).toBe(text);
-      }
-    },
-  );
+  it("every seeds/*.md is unchanged by redact()", () => {
+    expect(seeds.length).toBeGreaterThan(0);
+    for (const name of seeds) {
+      const text = readFileSync(join(seedsDir, name), "utf8");
+      expect(redact(text, { share: "public" }), name).toBe(text);
+    }
+  });
 });

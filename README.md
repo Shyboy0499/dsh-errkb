@@ -11,22 +11,23 @@
 `dsh-errkb` is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) plugin that turns the errors a model hits into a numbered, human-editable knowledge base — then pushes the recorded fix back into context *before* the model starts diagnosing.
 
 > **Status: P2 in progress.** The design document is written and under review —
-> eight decisions in its §17 are still open — and the work is broken into
-> [eighteen tasks](#roadmap) across seven milestones. **T01–T07 are done:** the
-> package installs, builds, type checks, lints, formats and tests, CI runs all
-> five on every pull request, and the pure local layer has its first three
-> modules: knowledge-base directory resolution (T05), error normalization and
-> fingerprinting (T06), and mandatory redaction (T07).
+> six of the eight decisions in its §17 are still open (Q2 and Q4 are decided) —
+> and the work is broken into [eighteen tasks](#roadmap) across seven milestones.
+> **T01–T08 are done:** the package installs, builds, type checks, lints, formats
+> and tests, CI runs all five on every pull request, and the pure local layer has
+> four modules: knowledge-base directory resolution (T05), error normalization
+> and fingerprinting (T06), mandatory redaction (T07) and the `ERRORS.md` store
+> (T08). Only matching (T09) is left in that layer.
 >
-> **The plugin still does nothing.** `apply` writes one startup line, and it is
-> not installed into any profile yet (that is T17), so there is no behaviour to
-> use. Everything marked "not implemented" below is still a description of the
+> **The plugin still does nothing.** `apply` writes one startup line and calls
+> none of those modules, and it is not installed into any profile yet (that is
+> T17), so there is no behaviour to use. Everything marked "not implemented" below is still a description of the
 > intended path.
 >
 > - Design document: [`docs/设计说明书.md`](docs/设计说明书.md) — 19 sections, Chinese
 > - What the plugin will do: [How it works](#how-it-works)
 > - Where your data will land: [Where the knowledge base lives](#where-the-knowledge-base-lives)
-> - What is blocking T06–T08: [Open decisions](#open-decisions) — §17 is still unanswered
+> - What is still open: [Open decisions](#open-decisions) — Q2 and Q4 of §17 are decided, six remain
 
 ## Contents
 
@@ -71,14 +72,15 @@
 | `src/paths.ts` — KB directory resolution                                  | ✅ In place (T05), 100% covered |
 | `src/signature.ts` — normalization and fingerprinting                     | ✅ In place (T06), 100% covered — not called by anything yet |
 | `src/redact.ts`, `src/redact-patterns.ts` — mandatory redaction           | ✅ In place (T07), 100% covered — not called by anything yet |
-| `src/store.ts` — parse, render, append, archive                           | ⛔ Not started             |
+| `src/store.ts` — parse, render, append, archive                           | ✅ In place (T08), 100% statements and lines — not called by anything yet |
+| `seeds/ERRORS.seed.md` — three curated, redacted seed entries             | ✅ In place (T08) — not copied into any knowledge base yet |
 | `src/match.ts` — exact, fuzzy and fallback matching                       | ⛔ Not started             |
 | `src/state.ts` — `state.json`, `.machine.json`, environment fingerprint   | ⛔ Not started             |
 | `src/capture.ts` — hook payloads and the noise rule                       | ⛔ Not started             |
 | `src/inject.ts` — notice generation and hard caps                         | ⛔ Not started             |
 | `src/resolve-detect.ts` — resolution detection                            | ⛔ Not started             |
 | `src/tools.ts` — the five agent tools                                     | ⛔ Not started             |
-| `tests/`                                                                  | ✅ 121 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07) |
+| `tests/`                                                                  | ✅ 183 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 57 and `seeds` 5 (T08) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -166,20 +168,20 @@ The listener on `agent/request-error` must `await next()` and return the downstr
 
 At startup the plugin logs the resolved path on one line, so the location is never a guess. `err_stats` prints it too.
 
-A development install is a `link:`, so during development the knowledge base is `errors/` inside this repository and travels with GitHub. Clone the repo onto any drive on any machine and the path follows; **no absolute path is ever written into the document**.
+**Real entries belong in a private repository** (§17 Q4). Redaction by text rules cannot be complete, so this public repository ignores `errors/` entirely and only carries curated, redacted seed entries in [`seeds/ERRORS.seed.md`](seeds/ERRORS.seed.md). To sync your knowledge base across devices, clone a private repository of your own on each machine and point `kbDir` at it — an absolute path, or a path relative to the plugin root. The `link:` development install would otherwise land in `errors/` inside this repository, where git now ignores it. Either way, **no absolute path is ever written into the document**.
 
 Inside that directory:
 
 | File                 | Role                                                                              | Treat it as                                        |
 | -------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `ERRORS.md`          | **The single source of truth** — numbered entries, append-only                     | Hand-editable, commit it                           |
-| `ERRORS.archive.md`  | Entries archived past `maxEntries`, append-only                                    | Commit it                                          |
+| `ERRORS.md`          | **The single source of truth** — numbered entries, append-only                     | Hand-editable; commit it to your private KB repository |
+| `ERRORS.archive.md`  | Entries archived past `maxEntries`, append-only                                    | Commit it to the same private repository           |
 | `errors.index.json`  | Derived cache: signature → ID                                                      | Deletable, rebuilt from `ERRORS.md`; gitignore it  |
 | `state.json`         | Machine-local state: hit counts, `lastSeen`, `nextId`, environment fingerprint     | Deletable; **machine-local, never commit it**      |
 | `.machine.json`      | Device slug (`deviceSlug`, e.g. `DESKTOP-A`) used for the entry's device field     | Deletable/regenerated; device-local, keep it out of git |
 | `.lock`              | Transient write lock, removed when the write finishes                              | Ignore it                                          |
 
-A sensible `.gitignore` for the knowledge base directory:
+A sensible `.gitignore` for that private knowledge base repository:
 
 ```gitignore
 state.json
@@ -196,31 +198,35 @@ That split is the whole cross-device story: knowledge merges by appending to `ER
 
 IDs start at `E-0001`, built from `idPrefix` (default `E-`) and `idWidth` (default `4`), and are **append-only — an ID is never changed once written**, not even to resolve a merge conflict.
 
-One entry, with machine fields carried in an HTML comment so the rendered document stays clean and hand-editing stays safe:
+One entry, in the default English labels, with machine fields carried in an HTML comment so the rendered document stays clean and hand-editing stays safe:
 
 ````md
 ## E-0007 · [tool:pwsh] EPERM: operation not permitted, rename
-<!-- errkb: sig=3f2a1c9d0b71 cat=tool code=EPERM first=2026-09-14T09:12:33Z device=DESKTOP-A proj=报错的回收再利用 -->
+<!-- errkb: sig=3f2a1c9d0b71 cat=tool code=EPERM first=2026-09-14T09:12:33Z -->
 
-- 指纹: `3f2a1c9d0b71`
-- 分类: `tool / pwsh`
-- 首次: 2026-09-14 09:12 · 最近: 2026-09-14 15:40 · 命中: 5
-- 触发: `pnpm install` 在中文路径下写 `node_modules` 时被占用
-- 原始信息:
+- Fingerprint: `3f2a1c9d0b71`
+- Category: `tool / pwsh`
+- First seen: 2026-09-14 09:12 · Last seen: 2026-09-14 15:40 · Hits: 5
+- Trigger: `pnpm install` writing `node_modules` under a non-ASCII path while another process holds it
+- Raw message:
   ```text
   EPERM: operation not permitted, rename '<path>\node_modules\.pnpm\<hash>'
   ```
-- 解法:
-  关闭占用该目录的编辑器/杀软实时扫描后重跑 `pnpm install`；仍失败则改用 `pnpm install --config.node-linker=hoisted`。
-- 状态: `fixed`
-- 备注:
+- Fix:
+  Close the editor or real-time antivirus scan holding the directory, then re-run `pnpm install`; if it persists, use `pnpm install --config.node-linker=hoisted`.
+- Status: `fixed`
+- Notes:
 ````
 
-**Parsing rules:** blocks split on `^## (E-\d+) ·`; the `<!-- errkb: ... -->` comment supplies the machine fields; `- 解法:` runs until the next `- ` field. **Your hand edits win over the index** — the index is only a cache, so a fix you type in any Markdown editor is used on the very next hit.
+**Labels:** English by default. Set `labels: 'zh'` to write the Chinese labels of the design document's §8 instead (`指纹`, `分类`, `首次`, `最近`, `命中`, `触发`, `原始信息`, `解法`, `状态`, `备注`). The parser reads both sets — and a full-width `：` — whatever the setting, so a document may mix them, and an updated entry keeps the language it was written in. Machine keys in the comment are always English.
+
+**Parsing rules:** blocks split on `^## (E-\d+) ·`; the `<!-- errkb: ... -->` comment supplies the machine fields; `- Fix:` (or `- 解法:`) runs until the next line that opens a known field, so a fix may hold blank lines, bullets and code. **Your hand edits win over the index** — the index is only a cache, so a fix you type in any Markdown editor is used on the very next hit. Every block keeps its exact text: reading and writing a document back is byte-identical, and an update rewrites only the entry it changes.
+
+**Strict where it matters:** a git conflict marker, a malformed entry header, a missing machine comment, a duplicate ID, an unknown status or an unterminated code fence makes the document unparseable. It is then saved aside once as `ERRORS.corrupt-<timestamp>.md`, new entries are only appended, and updates are refused until it is repaired.
 
 **Entry status:** `open`, `fixed`, or `wontfix`. Setting `wontfix` (or flagging an entry as a misjudgment) takes it out of automatic injection permanently while it keeps counting, so one bad record cannot keep poisoning the context.
 
-> **Field language is an open decision.** The on-disk labels above are Chinese (`指纹`, `解法`, `状态`, …) because that is what the design document specifies today; §17 Q2 asks whether they should stay Chinese or become English, with English machine keys either way. The sample will be updated when that is settled — see [Open decisions](#open-decisions).
+> **Field language is decided (§17 Q2):** English labels by default, `labels: 'zh'` for Chinese, both always parsed. The `device` and `proj` machine fields in the design document's sample are left out here; they arrive with the capture layer, and whether public mode hashes or drops them is still open (`docs/discussions.md` §5).
 
 ## Injection: when it speaks and how much
 
@@ -292,7 +298,7 @@ dsh plugin --profile web add .        # relative path, anchored to the current d
 
 Then **restart** `dsh web`. A change to `dsh.profile.bundles` is not covered by `patchReload: live`, so a restart is required rather than optional.
 
-A package that declares `dsh.bundle.patch` is merged into `dsh.profile.bundles` automatically — no manual profile editing. Because the development install is a `link:`, the knowledge base lands in `errors/` inside this repository, which is what makes the git-based device sync work. See [Where the knowledge base lives](#where-the-knowledge-base-lives).
+A package that declares `dsh.bundle.patch` is merged into `dsh.profile.bundles` automatically — no manual profile editing. Because the development install is a `link:`, an unconfigured knowledge base lands in `errors/` inside this repository, which git ignores; set `kbDir` to a private repository of your own to sync it across devices. See [Where the knowledge base lives](#where-the-knowledge-base-lives).
 
 ## Usage
 
@@ -358,6 +364,7 @@ Settings live in the profile patch, not in a separate config file:
 | `maxEntries`         | `200`                              | Above this, entries archive to `ERRORS.archive.md`                                              |
 | `maxSampleChars`     | `500`                              | Cap on the stored raw sample                                                                    |
 | `exportDir`          | `''`                               | Optional device-local export; empty disables it (e.g. an Obsidian vault path on one machine)     |
+| `labels`             | `'en'`                             | Language of the field labels in newly written entries: `en` or `zh`. Both are always parsed ([details](#the-errorsmd-format)) |
 
 ## Privacy and redaction
 
@@ -376,7 +383,7 @@ With `share: 'private'` project-relative and other absolute paths are kept, whic
 
 The credential patterns live in one place, `src/redact-patterns.ts`. The CI privacy guard is a shell `grep` and keeps its own copy of the expression; a test parses `.github/workflows/privacy-guard.yml` and fails when a family there has no equivalent in that file, so the two cannot drift apart unnoticed. Text-rule redaction is still not complete — internal host names, `user@host` in SSH errors and short tokens get through — which is why the next section keeps real entries out of public repositories.
 
-**The design assumes the knowledge base is tracked by git** so it can sync across devices, with redaction as the safety net. If you would rather not, set `share: 'private'` and add `ERRORS.md` / `ERRORS.archive.md` to `.gitignore`.
+**Real entries never go into a public repository (§17 Q4).** Redaction is the safety net, not the plan: the knowledge base is meant to live in a private repository that `kbDir` points to, which is also how it syncs across devices. This repository ignores `errors/` and only publishes the curated entries in `seeds/`; a test runs `redact()` over every `seeds/*.md` and fails if it would change a character. With a private repository, `share: 'private'` is a reasonable choice.
 
 There is no `SECURITY.md` yet, and no security policy — until there is, treat any leak of unredacted text into the document as a bug and report it. See [Open decisions](#open-decisions).
 
@@ -443,15 +450,15 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 
 | State | Tasks                                                                                   |
 | ----- | --------------------------------------------------------------------------------------- |
-| ✅    | T01–T07 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), paths, signature and redact |
-| 🔜    | T08–T09 — store, match                                                                  |
+| ✅    | T01–T08 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), paths, signature, redact and store |
+| 🔜    | T09 — match                                                                             |
 | 🔜    | T10–T11 — the capture layer: classification, and the first two hooks                    |
 | 🔜    | T12–T14 — the injection layer: notice text, four injection points, resolution detection |
 | 🔜    | T15 — the five agent tools                                                              |
 | 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
 | 🔜    | T18 — optional: Obsidian export                                                         |
 
-T01–T07 are checked off. T01–T05 are merged; T06–T07 are in review. The rest are open; T18 can be dropped at any point without touching the main line.
+T01–T08 are checked off. T01–T05 are merged; T06–T08 are in review. The rest are open; T18 can be dropped at any point without touching the main line.
 
 ### Milestone mapping
 
@@ -459,7 +466,7 @@ The design document plans in phases P0–P7 (§15); the task list numbers the sa
 
 | Phase          | Tasks   | Completion gate                                                              |
 | -------------- | ------- | ---------------------------------------------------------------------------- |
-| P0             | —       | The design document is written and **you have answered §17** — §17 is still unanswered |
+| P0             | —       | The design document is written and **you have answered §17** — two of eight answered (Q2, Q4) |
 | P1             | T01–T04 | ✅ `pnpm typecheck` passes — verified locally and in CI                       |
 | P2             | T05–T09 | Unit tests green, coverage gate met                                          |
 | P3             | T10–T11 | A guaranteed-failing command produces `E-0001`                               |
@@ -486,7 +493,7 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 | ☑ T05 | Resolve the KB path                    | `src/paths.ts` — three-tier resolution, startup log                          | Each of the three cases returns the expected path                                                    |
 | ☑ T06 | Normalize and fingerprint              | `src/signature.ts`                                                           | Changed path, line, PID, timestamp or UUID → same signature; different errors → different signatures |
 | ☑ T07 | Redact                                 | `src/redact.ts`                                                              | Zero hits in the output, asserted                                                                    |
-| ☐ T08 | Store the document                     | `src/store.ts` — parse, render, append, archive, lock, atomic write          | Round-trip identity; hand-edited fixes read back; 50 concurrent records yield 50 unique IDs          |
+| ☑ T08 | Store the document                     | `src/store.ts` — parse, render, append, archive, lock, atomic write          | Round-trip identity; hand-edited fixes read back; 50 concurrent records yield 50 unique IDs          |
 | ☐ T09 | Match                                  | `src/match.ts` — exact, fuzzy, code fallback, mis-flag fallback              | Boundary values 0.71 / 0.72 / 0.73 behave as specified                                               |
 | ☐ T10 | Classify, and suppress noise           | `src/capture.ts`                                                             | Transient errors get no ID until the threshold; capture off writes nothing                           |
 | ☐ T11 | Wire the first two hooks               | `agent/error`, `tools/result` listeners                                      | A guaranteed-failing command produces `E-0001`                                                       |
@@ -539,7 +546,7 @@ Everything below is a specification of intended behaviour, not a report of obser
 | "Injection is too noisy."                          | `inject: 'off'` stops it entirely while capture keeps recording; `systemPromptHint: false` removes the standing 50-token section; `sessionDigest: 'off'` removes the opening digest |
 | "One entry keeps being injected with the wrong fix." | Mark it `wontfix` via `err_record`, or flag it as a misjudgment — it stops being injected automatically but still counts |
 | "`ERRORS.md` looks broken."                        | The plugin never rewrites a document it cannot parse: the original is saved as `ERRORS.corrupt-<timestamp>.md` and new entries append after it. Repair the saved copy and restore it |
-| "I edited a fix by hand and nothing changed."      | Hand edits win over the index, so this should not happen — check that the edit is inside the `- 解法:` field and above the next `- ` field, then delete `errors.index.json` to force a rebuild |
+| "I edited a fix by hand and nothing changed."      | Hand edits win over the index, so this should not happen — check that the edit is inside the `- Fix:` (or `- 解法:`) field and above the next field label, then delete `errors.index.json` to force a rebuild |
 | "I want to start over."                            | Delete `state.json` (counters), delete `errors.index.json` (cache). Both are rebuilt. Deleting `ERRORS.md` deletes the knowledge — that is the only file that matters |
 | "Counters disagree across my two machines."        | Expected: counters are machine-local and deliberately not in git. Only the knowledge is shared |
 
@@ -551,14 +558,14 @@ What is true today: installing a plugin adds an entry to `dsh.profile.bundles` (
 
 ## Open decisions
 
-**These now block T06–T08 specifically.** P1 is done and P2 is in progress (T05 has landed), but §17 still holds eight unanswered questions with proposed defaults, and several of them decide what the next tasks build: Q2 (field-name language) shapes the document format in T08, Q4 (committing `errors/`) sets how strict redaction in T07 and the store in T08 must be, Q5 (scope of reuse) affects matching in T09, and Q6 (`captureExitCodes`) affects classification in T10 (see [Milestone mapping](#milestone-mapping)). Write answers in the "your answer" column of §17, or anything at all in the §19 annotation area of [`docs/设计说明书.md`](docs/设计说明书.md).
+**Two are decided, six remain.** Q2 and Q4 were answered for T07–T08 and are recorded in §17. The rest still decide what later tasks build: Q5 (scope of reuse) affects matching in T09, and Q6 (`captureExitCodes`) affects classification in T10 (see [Milestone mapping](#milestone-mapping)). Write answers in the "your answer" column of §17, or anything at all in the §19 annotation area of [`docs/设计说明书.md`](docs/设计说明书.md).
 
 | # | Question                                                             | Proposed default                                                        | State |
 | - | -------------------------------------------------------------------- | ----------------------------------------------------------------------- | ----- |
 | 1 | Package name / plugin id / tool prefix / ID prefix                    | `dsh-errkb` / `err-kb` / `err_` / `E-` — both npm names were unclaimed when checked on 2026-10-01 (registry 404) | Open |
-| 2 | Language of the document's field names                                | Chinese labels + English machine keys                                    | Open  |
+| 2 | Language of the document's field names                                | Chinese labels + English machine keys                                    | **Decided:** English labels by default, `labels: 'zh'` for Chinese; both are always parsed |
 | 3 | Accept that counters stay out of git and only knowledge syncs          | Accept                                                                   | Open  |
-| 4 | Commit `errors/` into the GitHub repository                            | Yes, with mandatory redaction as the safety net                           | Open  |
+| 4 | Commit `errors/` into the GitHub repository                            | Yes, with mandatory redaction as the safety net                           | **Decided:** no — the real KB lives in a private repository (`kbDir` points to it); this repository ignores `errors/` and only carries curated `seeds/` |
 | 5 | Scope of reuse                                                         | One shared KB for all projects, with a project field on each entry        | Open  |
 | 6 | `captureExitCodes` default                                             | On — command failures are the most reusable case                           | Open  |
 | 7 | Which P7 extras (GUI panel / auto-running fixes / Obsidian export)     | Obsidian export only for now                                              | Open  |
