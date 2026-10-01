@@ -25,7 +25,7 @@
 > - Design document: [`docs/设计说明书.md`](docs/设计说明书.md) — 19 sections, Chinese
 > - What the plugin will do: [How it works](#how-it-works)
 > - Where your data will land: [Where the knowledge base lives](#where-the-knowledge-base-lives)
-> - What is blocking the start: [Open decisions](#open-decisions) — §17 is still unanswered
+> - What is blocking T06–T08: [Open decisions](#open-decisions) — §17 is still unanswered
 
 ## Contents
 
@@ -265,7 +265,7 @@ Below that hit rate the fixed session cost exceeds the savings, and the honest a
 | `dsh-llm`      | `0.1.5-rc.2`                                                                                  |
 | schemastery    | `3.18.2`                                                                                      |
 | Build tooling  | `tsdown 0.22.2`, `vitest`, `typescript`, `oxlint`, `prettier`                                  |
-| Node / pnpm    | **Not pinned yet** — no `engines` range has been decided; see [Open decisions](#open-decisions) |
+| Node / pnpm    | Node `>=22.13` (`engines.node`), pnpm `11.7.0` (`packageManager`), both in `package.json`     |
 | Platform       | Developed and verified on Windows. No other platform has been tested and no OS support statement exists yet |
 
 The extension points below were verified against the local installation, not against published documentation — file and line references are in §2 of the design document:
@@ -437,15 +437,15 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 
 | State | Tasks                                                                                   |
 | ----- | --------------------------------------------------------------------------------------- |
-| ✅    | T01–T04 — project skeleton: package, tsconfig, tsdown, vitest, bundle patch             |
-| 🔜    | T05–T09 — the pure local layer: paths, signature, redact, store, match                  |
+| ✅    | T01–T05 — project skeleton (package, tsconfig, tsdown, vitest, bundle patch), and paths |
+| 🔜    | T06–T09 — signature, redact, store, match                                               |
 | 🔜    | T10–T11 — the capture layer: classification, and the first two hooks                    |
 | 🔜    | T12–T14 — the injection layer: notice text, four injection points, resolution detection |
 | 🔜    | T15 — the five agent tools                                                              |
 | 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
 | 🔜    | T18 — optional: Obsidian export                                                         |
 
-T01–T04 are checked off and merged. The rest are open; T18 can be dropped at any point without touching the main line.
+T01–T05 are checked off and merged. The rest are open; T18 can be dropped at any point without touching the main line.
 
 ### Milestone mapping
 
@@ -466,7 +466,7 @@ The design document plans in phases P0–P7 (§15); the task list numbers the sa
 
 Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 
-- **Publishing has no task.** The status table lists "Published to npm" and §17 Q1 admits the npm name has not been checked for availability, but none of T01–T18 covers checking the name or publishing a release. CI is not in the task list either — it landed as repository infrastructure instead, see [What works today](#what-works-today).
+- **Publishing has no task.** The status table lists "Published to npm" and §17 Q1 originally left the npm name unchecked (both `dsh-errkb` and `err-kb` were unclaimed on 2026-10-01), but none of T01–T18 covers reserving the name or publishing a release. CI is not in the task list either — it landed as repository infrastructure instead, see [What works today](#what-works-today).
 - **`err_export` is missing from the README's task list.** §15 P7 mentions an `err_export` single-file JSON backup alongside the Obsidian export; T18 only mentions the Obsidian export. Either the tool returns or the phase description is trimmed.
 
 ### Full task breakdown
@@ -545,11 +545,11 @@ What is true today: installing a plugin adds an entry to `dsh.profile.bundles` (
 
 ## Open decisions
 
-**Nothing starts until these are answered.** The design document is at P0, and §17 holds eight questions with proposed defaults; answering them is the gate for P1 (see [Milestone mapping](#milestone-mapping)). Write answers in the "your answer" column of §17, or anything at all in the §19 annotation area of [`docs/设计说明书.md`](docs/设计说明书.md).
+**These now block T06–T08 specifically.** P1 is done and P2 is in progress (T05 has landed), but §17 still holds eight unanswered questions with proposed defaults, and several of them decide what the next tasks build: Q2 (field-name language) shapes the document format in T08, Q4 (committing `errors/`) sets how strict redaction in T07 and the store in T08 must be, Q5 (scope of reuse) affects matching in T09, and Q6 (`captureExitCodes`) affects classification in T10 (see [Milestone mapping](#milestone-mapping)). Write answers in the "your answer" column of §17, or anything at all in the §19 annotation area of [`docs/设计说明书.md`](docs/设计说明书.md).
 
 | # | Question                                                             | Proposed default                                                        | State |
 | - | -------------------------------------------------------------------- | ----------------------------------------------------------------------- | ----- |
-| 1 | Package name / plugin id / tool prefix / ID prefix                    | `dsh-errkb` / `err-kb` / `err_` / `E-` — **npm name availability unchecked** | Open |
+| 1 | Package name / plugin id / tool prefix / ID prefix                    | `dsh-errkb` / `err-kb` / `err_` / `E-` — both npm names were unclaimed when checked on 2026-10-01 (registry 404) | Open |
 | 2 | Language of the document's field names                                | Chinese labels + English machine keys                                    | Open  |
 | 3 | Accept that counters stay out of git and only knowledge syncs          | Accept                                                                   | Open  |
 | 4 | Commit `errors/` into the GitHub repository                            | Yes, with mandatory redaction as the safety net                           | Open  |
@@ -560,7 +560,7 @@ What is true today: installing a plugin adds an entry to `dsh.profile.bundles` (
 
 Two further gaps are **not** in §17 and will need an answer before the README can stop saying "not specified":
 
-- **Requirements**: no Node, pnpm or OS support statement, and no `engines` range.
+- **Requirements**: Node and pnpm are pinned in `package.json` (`engines.node >=22.13`, `packageManager pnpm@11.7.0`), but there is still no OS support statement.
 - **Distribution and maintenance**: no task covers publishing to npm, checking that the npm name is free, CI, or uninstalling.
 
 ## Future work
