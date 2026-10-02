@@ -1084,6 +1084,37 @@ describe("err_stats", () => {
 // ---------------------------------------------------------------------------
 // Injection counters
 
+describe("effective counts: ERRORS.md baseline + this machine's state.json (§4.3)", () => {
+  it("err_lookup, err_list and err_stats add state.json's hits to the block's", async () => {
+    await seed({}, {});
+    await writeFile(
+      filesIn(dir).state,
+      JSON.stringify({
+        version: 1,
+        entries: { "E-0001": { hits: 4, lastSeen: "2026-10-01 08:00" } },
+        trust: {},
+      }),
+    );
+    const { tools } = wired();
+
+    const lookup = await callTool(tools, "err_lookup", { query: "E-1" });
+    expect(lookup.value.entry).toMatchObject({ id: "E-0001", hits: 5 });
+    expect(lookup.text).toContain("hits: 5");
+
+    const list = await callTool(tools, "err_list", {});
+    expect(list.text.split("\n").slice(0, 2)).toEqual([
+      "E-0001 (5) [tool:bash] failure 1",
+      "E-0002 (1) [tool:bash] failure 2",
+    ]);
+
+    const stats = await callTool(tools, "err_stats", {});
+    expect(stats.value).toMatchObject({ entries: 2, hits: 6 });
+
+    // The block itself still says 1.
+    expect((await entries()).map((e) => e.hits)).toEqual([1, 1]);
+  });
+});
+
 describe("injection counts", () => {
   it("an unknown session counts nothing; a pre-step notice is counted too", async () => {
     const fake = fakeCtx();

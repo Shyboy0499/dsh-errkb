@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
@@ -222,6 +222,15 @@ async function call(
   return decision;
 }
 
+/** Each entry's effective hits: its ERRORS.md baseline plus state.json. */
+async function effectiveHits() {
+  const index = await createRecorder({
+    files: filesIn(dir),
+    logger: { warn: () => undefined },
+  }).entries();
+  return index?.map(({ entry }) => [entry.id, entry.hits]);
+}
+
 /** A recorder and injection wired by hand, for the tests that need the parts. */
 function wired(
   options: Partial<InjectionOptions> = {},
@@ -354,10 +363,7 @@ describe("tools/post-execute: the T13 acceptance path", () => {
     expect(contexts(await call(fake, shell(), ok(TSC_A)))).toEqual([]);
 
     // Capture kept recording throughout.
-    const document = await createStore(filesIn(dir)).read();
-    expect(document.blocks.map((b) => [b.entry.id, b.entry.hits])).toEqual([
-      ["E-0001", 5],
-    ]);
+    expect(await effectiveHits()).toEqual([["E-0001", 5]]);
   });
 
   it("at most three notices per turn, across entries", async () => {
@@ -607,8 +613,7 @@ describe("inject: 'off'", () => {
     await settled(filesIn(dir).errors);
     const next: PreStepDecision = { kind: "enter", messages: [] };
     expect(await fake.preStep(a, 2, 1, next)).toBe(next);
-    const document = await createStore(filesIn(dir)).read();
-    expect(document.blocks.map((b) => [b.entry.id, b.entry.hits])).toEqual([
+    expect(await effectiveHits()).toEqual([
       ["E-0001", 2],
       ["E-0002", 1],
     ]);
@@ -935,6 +940,66 @@ describe("fix trust through the hooks", () => {
 // ---------------------------------------------------------------------------
 // agent/session-start
 
+describe("state.json: counters stay out of ERRORS.md (§4.3)", () => {
+  const readState = async () =>
+    JSON.parse(await readFile(filesIn(dir).state, "utf8")) as {
+      entries: Record<string, { hits: number; lastSeen: string }>;
+    };
+
+  it("a repeated failure leaves ERRORS.md byte-identical; hits count in state.json and the notice adds them up", async () => {
+    const fake = applied({ sessionDigest: "index" });
+    const a = agent();
+    const shell = () => exec("shell", { command: "pnpm tsc" }, a);
+
+    await fake.preStep(a, 1, 1);
+    await call(fake, shell(), ok(TSC_A));
+    // A baseline a person typed: the block says 5.
+    await edit("E-0001", { fix: FIX, hits: 5 });
+    const before = await readFile(filesIn(dir).errors, "utf8");
+    await expect(readFile(filesIn(dir).state, "utf8")).rejects.toThrow();
+
+    // Repeat 1: the notice counts this occurrence too, 5 + 0 + 1.
+    await fake.preStep(a, 1, 2);
+    expect(contexts(await call(fake, shell(), ok(TSC_B)))[0]).toMatch(
+      /^\[errkb\] E-0001 known \(6 hits\)/,
+    );
+    expect(await readFile(filesIn(dir).errors, "utf8")).toBe(before);
+    expect((await readState()).entries["E-0001"]?.hits).toBe(1);
+
+    // Repeat 2: 5 + 1 + 1.
+    await fake.preStep(a, 2, 1);
+    expect(contexts(await call(fake, shell(), ok(TSC_A)))[0]).toMatch(
+      /^\[errkb\] E-0001 known \(7 hits\)/,
+    );
+    expect(await readFile(filesIn(dir).errors, "utf8")).toBe(before);
+    expect((await readState()).entries["E-0001"]).toEqual({
+      hits: 2,
+      lastSeen: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/),
+    });
+    expect(await effectiveHits()).toEqual([["E-0001", 7]]);
+
+    // The digest's index shows the effective count as well.
+    const b = agent("s2");
+    await fake.sessionStart(b);
+    expect(textOf(b.injected[0])).toContain("E-0001 ");
+    expect(textOf(b.injected[0])).toContain("(7 hits)");
+  });
+
+  it("deleting state.json is harmless: the counts fall back to the baselines", async () => {
+    const fake = applied();
+    const shell = () => exec("shell", { command: "pnpm tsc" });
+    await call(fake, shell(), ok(TSC_A));
+    await call(fake, shell(), ok(TSC_B));
+    await call(fake, shell(), ok(TSC_A));
+    expect(await effectiveHits()).toEqual([["E-0001", 3]]);
+    await rm(filesIn(dir).state);
+    expect(await effectiveHits()).toEqual([["E-0001", 1]]);
+    // The next repeat starts a fresh delta on top of the baseline.
+    await call(fake, shell(), ok(TSC_B));
+    expect(await effectiveHits()).toEqual([["E-0001", 2]]);
+  });
+});
+
 describe("agent/session-start: the digest", () => {
   async function seed(n: number) {
     const store = createStore(filesIn(dir));
@@ -1243,10 +1308,7 @@ describe("resolution detection (T14)", () => {
     // command does not split it.
     await call(fake, shell("pnpm tsc"), ok(TSC_A));
     await call(fake, shell("npx tsc"), ok(TSC_B));
-    const document = await createStore(filesIn(dir)).read();
-    expect(document.blocks.map((b) => [b.entry.id, b.entry.hits])).toEqual([
-      ["E-0001", 2],
-    ]);
+    expect(await effectiveHits()).toEqual([["E-0001", 2]]);
     await succeed(fake, shell("pnpm tsc"));
     expect(entered(await fake.preStep(a, 1, 1))).toEqual([]);
     await succeed(fake, shell("npx tsc"));
