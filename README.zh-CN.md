@@ -400,22 +400,24 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | 配置项               | 默认                               | 用途                                                                                                     |
 | -------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `kbDir`              | `''`                               | 空则自动解析：配置 → 插件根 `errors/` → `$DSH_HOME/errkb/`（[详见](#知识库落在哪里)）。相对路径基于插件包根 |
-| `idPrefix`           | `'E-'`                             | 编号前缀（设计文档 §8 定义；§10 的配置表里没有它）                                                        |
-| `idWidth`            | `4`                                | 编号的补零位宽                                                                                           |
+| `idPrefix`           | `'E-'`                             | 编号前缀（设计文档 §8 定义；§10 的配置表里没有它）。只能含字母、数字、`-` 和 `_`，且不以数字结尾；否则使用 `E-`                                                        |
+| `idWidth`            | `4`                                | 编号的补零位宽，1 到 9 的整数                                                                                           |
 | `capture`            | `['tool','command','llm','agent']` | 采集开关，逐个可关                                                                                       |
 | `captureExitCodes`   | `true`                             | 是否记录非零退出的命令                                                                                   |
-| `transientThreshold` | `5`                                | 瞬时 LLM 错误升级为编号条目所需的次数                                                                    |
-| `fuzzyThreshold`     | `0.72`                             | 模糊匹配所需的相似度（取值区间 0.5–1.0）                                                                 |
+| `transientThreshold` | `5`                                | 瞬时 LLM 错误升级为编号条目所需的次数；向上取整，至少为 1                                                                    |
+| `fuzzyThreshold`     | `0.72`                             | 模糊匹配所需的相似度，取值 0.5 到 1.0                                                                 |
 | `captureFix`         | `'prompt-once'`                    | `prompt-once` 或 `off`：没有解法的条目看起来已解决时，是否每会话一次提示模型说出解法；其他值退回 `prompt-once` |
 | `inject`             | `'hit-only'`                       | `hit-only`、`always` 或 `off`；其他取值一律按 `hit-only` 处理                                             |
 | `sessionDigest`      | `'counts'`                         | 会话开场摘要：`off`、`counts` 或 `index`（最多 10 条）；其他取值一律按 `counts` 处理                       |
 | `systemPromptHint`   | `true`                             | 是否注入那 50 token 的行为约定段                                                                         |
 | `providers`          | `['*']`                            | 限定只记录哪些 provider（可填 `deepseek-official`）                                                       |
 | `share`              | `'public'`                         | 脱敏强度 —— `public` 或 `private`（[详见](#隐私与脱敏)）                                                   |
-| `maxEntries`         | `200`                              | 超出后归档到 `ERRORS.archive.md`                                                                         |
-| `maxSampleChars`     | `500`                              | 原始样本的存储上限                                                                                       |
+| `maxEntries`         | `200`                              | 超出后归档到 `ERRORS.archive.md`；整数，至少为 1                                                                       |
+| `maxSampleChars`     | `500`                              | 原始样本的存储上限；整数，至少为 0，`0` 表示不封顶                                                                                       |
 | `exportDir`          | `''`                               | 可选的设备本地导出目录；空则关闭（例如某台机器上的 Obsidian 路径）                                        |
 | `labels`             | `'en'`                             | 新写入条目的字段名语言：`en` 或 `zh`。两种都始终能解析（[详见](#errorsmd-的格式)）                         |
+
+数值配置超出取值范围、或 `idPrefix` 形状不对时，插件照常启动：改用最接近的合法值（整数型配置的小数部分向下取整，`transientThreshold` 例外、向上取整；不是数字的值和不合规的 `idPrefix` 用默认值），并记一条警告，写明配置项、给定值和实际采用的值。
 
 ## 隐私与脱敏
 

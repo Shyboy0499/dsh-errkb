@@ -413,22 +413,24 @@ Settings live in the profile patch, not in a separate config file:
 | Setting              | Default                            | Purpose                                                                                        |
 | -------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `kbDir`              | `''`                               | Empty resolves automatically: config → plugin root `errors/` → `$DSH_HOME/errkb/` ([details](#where-the-knowledge-base-lives)). A relative path is resolved against the plugin package root |
-| `idPrefix`           | `'E-'`                             | Entry ID prefix (§8 of the design document; it is not in §10's table)                           |
-| `idWidth`            | `4`                                | Zero-padding width for IDs                                                                      |
+| `idPrefix`           | `'E-'`                             | Entry ID prefix (§8 of the design document; it is not in §10's table). Letters, digits, `-` and `_`, not ending in a digit; anything else uses `E-`                           |
+| `idWidth`            | `4`                                | Zero-padding width for IDs, a whole number from 1 to 9                                                                      |
 | `capture`            | `['tool','command','llm','agent']` | Capture toggles, each can be off                                                                |
 | `captureExitCodes`   | `true`                             | Record commands that exited non-zero                                                            |
-| `transientThreshold` | `5`                                | Occurrences before a transient LLM error earns an ID                                            |
-| `fuzzyThreshold`     | `0.72`                             | Similarity needed for a fuzzy match (range 0.5–1.0)                                             |
+| `transientThreshold` | `5`                                | Occurrences before a transient LLM error earns an ID; rounded up to a whole number, at least 1                                            |
+| `fuzzyThreshold`     | `0.72`                             | Similarity needed for a fuzzy match, from 0.5 to 1.0                                             |
 | `captureFix`         | `'prompt-once'`                    | `prompt-once` or `off`: ask the model once per session to state the fix of an entry that has none, when it looks resolved; any other value falls back to `prompt-once` |
 | `inject`             | `'hit-only'`                       | `hit-only`, `always` or `off`; any other value falls back to `hit-only`                         |
 | `sessionDigest`      | `'counts'`                         | Session-opening digest: `off`, `counts` or `index` (at most 10 entries); any other value falls back to `counts` |
 | `systemPromptHint`   | `true`                             | The 50-token behavioural section                                                                |
 | `providers`          | `['*']`                            | Restrict which providers are recorded (e.g. `deepseek-official`)                                 |
 | `share`              | `'public'`                         | Redaction strength — `public` or `private` ([details](#privacy-and-redaction))                   |
-| `maxEntries`         | `200`                              | Above this, entries archive to `ERRORS.archive.md`                                              |
-| `maxSampleChars`     | `500`                              | Cap on the stored raw sample                                                                    |
+| `maxEntries`         | `200`                              | Above this, entries archive to `ERRORS.archive.md`; a whole number, at least 1                                              |
+| `maxSampleChars`     | `500`                              | Cap on the stored raw sample, a whole number, at least 0; `0` means no cap                                                                  |
 | `exportDir`          | `''`                               | Optional device-local export; empty disables it (e.g. an Obsidian vault path on one machine)     |
 | `labels`             | `'en'`                             | Language of the field labels in newly written entries: `en` or `zh`. Both are always parsed ([details](#the-errorsmd-format)) |
+
+A numeric setting outside its range, or an `idPrefix` of the wrong shape, does not stop the plugin: it starts with the nearest allowed value instead (a fraction in a whole-number setting rounds down, except in `transientThreshold`, which rounds up; a value that is not a number, or a bad `idPrefix`, takes the default) and logs one warning naming the setting, the value given and the value used.
 
 ## Privacy and redaction
 
