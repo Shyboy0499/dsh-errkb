@@ -35,8 +35,9 @@
 // same turn. One recurrence turns the wording into "This fix failed here last
 // time"; two with no recorded success stop the ID from being injected on this
 // machine. Editing the entry's fix starts its count again. The state is a plain
-// serializable object behind TrustStore, held in memory for now; it is
-// machine-local and never written into ERRORS.md.
+// serializable object behind TrustStore. The plugin keeps it in state.json
+// under `trust` (stateTrustStore() in plugin.ts), so suppression survives a
+// restart; it is machine-local and never written into ERRORS.md.
 import { createHash } from "node:crypto";
 import {
   CONTEXT_SUMMARY_MAX_CHARS,
@@ -397,10 +398,17 @@ export interface TrustState {
   entries: Record<string, TrustRecord>;
 }
 
-/** Where trust state lives; state.json later, memory for now. */
+/** Where trust state lives: state.json in the plugin, memory in tests. */
 export interface TrustStore {
+  /** The state to start from, synchronously. */
   load(): TrustState;
   save(state: TrustState): void;
+  /**
+   * For a store that reads asynchronously: the saved state, once read, or
+   * undefined when there is none. Its records join the ones load() gave,
+   * without replacing any that changed meanwhile. Never rejects.
+   */
+  loaded?: Promise<TrustState | undefined>;
 }
 
 /**
@@ -460,8 +468,15 @@ export class FixTrust {
   // another session's injections.
   private readonly injectedThisTurn = new Set<string>();
 
+  /** Settles once the store's asynchronous state, if any, has joined in. */
+  readonly ready: Promise<void>;
+
   constructor(private readonly store: TrustStore = memoryTrustStore()) {
     this.state = store.load();
+    this.ready = (store.loaded ?? Promise.resolve(undefined)).then((saved) => {
+      for (const [id, record] of Object.entries(saved?.entries ?? {}))
+        this.state.entries[id] ??= record;
+    });
   }
 
   /** The record for an entry, or undefined when none applies to this fix. */

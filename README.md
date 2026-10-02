@@ -14,9 +14,9 @@
 > six of the eight decisions in its §17 are still open (Q2 and Q4 are decided) —
 > and the work is broken into [eighteen tasks](#roadmap) across seven milestones.
 > **T01–T15 are done:** the package installs, builds, type checks, lints, formats
-> and tests (with the 99% coverage gate enforced), CI runs all five on every pull
-> request, and the pure local layer is complete: knowledge-base directory
-> resolution (T05), error normalization and fingerprinting (T06), mandatory
+> and tests (with the 99% coverage gate enforced), CI runs all five on every
+> push to `main` and every pull request, and the pure local layer is complete:
+> knowledge-base directory resolution (T05), error normalization and fingerprinting (T06), mandatory
 > redaction (T07), the `ERRORS.md` store (T08) and matching (T09). The capture
 > layer is wired: classification and the noise rule (T10), and the first two
 > hooks, `agent/error` and `tools/result` (T11). The injection layer speaks:
@@ -33,8 +33,8 @@
 > T15), which writes it into `ERRORS.md`. Still missing: LLM request-failure
 > capture (T16), and installation into a profile (T17) — nothing installs it
 > for you yet, so the tools only reach a model once you add the plugin to a
-> profile yourself. Everything marked "not implemented" below is still a
-> description of the intended path.
+> profile yourself. Anything below tied to T16–T18 is still a description of
+> the intended path.
 >
 > - Design document: [`docs/设计说明书.md`](docs/设计说明书.md) — 19 sections, Chinese
 > - What the plugin will do: [How it works](#how-it-works)
@@ -88,12 +88,12 @@
 | `src/store.ts` — parse, render, append, archive                           | ✅ In place (T08), 100% statements and lines — written by the T11 listeners and the T15 tools; `archive(id, reason)` added for `err_forget` |
 | `seeds/ERRORS.seed.md` — three curated, redacted seed entries             | ✅ In place (T08) — not copied into any knowledge base yet |
 | `src/match.ts` — exact, fuzzy and fallback matching                       | ✅ In place (T09), 100% statements and lines — consulted before every write |
-| `src/state.ts` — `state.json`, `.machine.json`, environment fingerprint   | ⛔ Not started             |
+| `src/state.ts` — `state.json`, `.machine.json`, environment fingerprint   | Hit counters and fix-trust counters in `state.json`: ✅ In place (§4.3, T12), 100% statements and lines. `.machine.json` and the environment fingerprint: ⛔ Not started |
 | `src/capture.ts` — classification, headline extraction and the noise rule | ✅ In place (T10), 100% statements and lines — called by the T11 listeners |
 | `src/inject.ts` — notice generation, hard caps and fix trust              | ✅ In place (T12), 100% statements and lines — wired to the four injection points (T13) |
 | `src/resolve-detect.ts` — resolution detection                            | ✅ In place (T14), 100% statements and lines — fed by `tools/result`; `recordFix()` is called by `err_record` (T15) |
 | `src/tools.ts` — the five agent tools                                     | ✅ In place (T15), 100% statements and lines — `err_lookup`, `err_record`, `err_list`, `err_forget`, `err_stats`, registered through `ctx.tools.register()` |
-| `tests/`                                                                  | ✅ 522 cases: `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 62 and `seeds` 5 (T08, T15), `match` 40 (T09), `capture` 67 (T10), `plugin` 39 (T11, T14), `inject` 68 (T12–T15), `injection` 65 (T13, T14), `resolve-detect` 19 (T14), `tools` 36 (T15) |
+| `tests/`                                                                  | ✅ 554 cases (one skipped off Windows): `paths` 39 (T05), `signature` 30 (T06), `redact` 52 (T07), `store` 62 and `seeds` 5 (T08, T15), `match` 40 (T09), `capture` 67 (T10), `plugin` 44 (T11, T14), `inject` 70 (T12–T15), `injection` 68 (T13, T14), `resolve-detect` 19 (T14), `tools` 40 (T15), `state` 18 (§4.3) |
 | Installed into the `web` profile                                          | ⛔ Not started             |
 | Published to npm                                                          | ⛔ Not started — no task covers it yet, see [Roadmap](#roadmap) |
 
@@ -132,7 +132,8 @@ For a failure you see once, that is fine. For a failure you see every week — a
 ## How it works
 
 ```
-1. CAPTURE      agent/request-error · agent/error · tools/result · non-zero exits
+1. CAPTURE      agent/error · tools/result · non-zero exits
+                (agent/request-error: not yet wired, T16)
                 observe only — never throws, never takes over retries
                                      │
                                      ▼
@@ -166,15 +167,15 @@ Not every failure deserves a number. Transient ones are counted and only promote
 
 | Source                               | Hook                                 | Captured as                                                    | Gets an ID?                                                                        |
 | ------------------------------------ | ------------------------------------ | -------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| LLM API failure                      | `agent/request-error` (waterfall)    | `code` + normalized message                                    | Permanent codes: `AUTH`, `QUOTA`, `INVALID_REQUEST`, `CONTEXT_OVERFLOW`, `NO_ADAPTER`, `UNKNOWN` → immediately |
+| LLM API failure                      | `agent/request-error` (waterfall)    | `code` + normalized message                                    | Permanent codes: `AUTH`, `QUOTA`, `INVALID_REQUEST`, `CONTEXT_OVERFLOW`, `NO_ADAPTER`, `UNKNOWN` → immediately — **not yet wired (T16)** |
 | Turn-level exception                 | `agent/error` (emit)                 | `error.message` / `code` / `name`                              | Immediately (safely stringified when `unknown`)                                     |
 | Tool failure                         | `tools/result` (emit)                | `exec.name` + `result.error.message` + `result.error.info.code` | Immediately (`result.isError`)                                                      |
 | Command exited non-zero              | `tools/result` content sniffing      | matches `\[exit code: (\d+)\]` with N ≠ 0                      | Immediately, unless `captureExitCodes` is off                                       |
-| Transient LLM failure                | `agent/request-error`                | `RATE_LIMIT`, `SERVER`, `TIMEOUT`, `TRANSPORT`, `EMPTY_RESPONSE` | ❌ counted only — promoted after `transientThreshold` (default 5) in one session    |
+| Transient LLM failure                | `agent/request-error`                | `RATE_LIMIT`, `SERVER`, `TIMEOUT`, `TRANSPORT`, `EMPTY_RESPONSE` | ❌ counted only — promoted after `transientThreshold` (default 5) in one session — **not yet wired (T16)** |
 
-The listener on `agent/request-error` must `await next()` and return the downstream result unchanged. It observes; it never recovers.
+When it lands (T16), the listener on `agent/request-error` must `await next()` and return the downstream result unchanged. It observes; it never recovers.
 
-**What is wired today (T11).** `src/plugin.ts` holds the listener bodies; `apply` registers two of them. `agent/error` hands its `error` to classification as a turn-level exception. `tools/result` records a failed result (`result.isError`) as a tool failure with `result.error.message` and `result.error.info?.code`; any other result has its text blocks sniffed for `[exit code: N]`, with the command taken from the call's `command`, `cmd` or `script` argument. Each classified error is matched against the entries already in `ERRORS.md`: a hit bumps that entry's hits and last-seen, a miss appends the next ID. A `count-only` error (a transient one below the threshold, or one after its promotion) only bumps an entry that already has its signature, and writes nothing otherwise. Transient counts are kept per session, by `Agent.id`; a payload with no agent counts under one plugin-wide counter. `agent/request-error` is not registered yet (T16), so no LLM failure reaches the pipeline.
+**What is wired today (T11).** `src/plugin.ts` holds the listener bodies; `apply` registers two of them. `agent/error` hands its `error` to classification as a turn-level exception. `tools/result` records a failed result (`result.isError`) as a tool failure with `result.error.message` and `result.error.info?.code`; any other result has its text blocks sniffed for `[exit code: N]`, with the command taken from the call's `command`, `cmd` or `script` argument. Each classified error is matched against the entries already in `ERRORS.md`: a hit bumps that entry's hits and last-seen in this machine's `state.json` and leaves `ERRORS.md` untouched (§4.3), a miss appends the next ID. A `count-only` error (a transient one below the threshold, or one after its promotion) only bumps an entry that already has its signature, the same way, and writes nothing otherwise. Transient counts are kept per session, by `Agent.id`; a payload with no agent counts under one plugin-wide counter. `agent/request-error` is not registered yet (T16), so no LLM failure reaches the pipeline.
 
 **Promotion happens once.** A transient error's count is kept per session and per signature, and it takes an ID on the occurrence that *reaches* `transientThreshold` — not on every occurrence after it. With a source left out of `capture`, nothing is produced for it at all, not even a count.
 
@@ -207,7 +208,7 @@ Inside that directory:
 | `ERRORS.md`          | **The single source of truth** — numbered entries, append-only                     | Hand-editable; commit it to your private KB repository |
 | `ERRORS.archive.md`  | Entries archived past `maxEntries`, append-only                                    | Commit it to the same private repository           |
 | `errors.index.json`  | Derived cache: signature → ID                                                      | Deletable, rebuilt from `ERRORS.md`; gitignore it  |
-| `state.json`         | Machine-local state: hit counts, `lastSeen`, `nextId`, environment fingerprint     | Deletable; **machine-local, never commit it**      |
+| `state.json`         | Machine-local state: each entry's hits and `lastSeen` on this machine, and fix-trust counters (the environment fingerprint is not built yet) | Deletable; **machine-local, never commit it**      |
 | `.machine.json`      | Device slug (`deviceSlug`, e.g. `DESKTOP-A`) used for the entry's device field     | Deletable/regenerated; device-local, keep it out of git |
 | `.lock`              | Transient write lock, removed when the write finishes                              | Ignore it                                          |
 
@@ -250,6 +251,8 @@ One entry, in the default English labels, with machine fields carried in an HTML
 
 **Labels:** English by default. Set `labels: 'zh'` to write the Chinese labels of the design document's §8 instead (`指纹`, `分类`, `首次`, `最近`, `命中`, `触发`, `原始信息`, `解法`, `状态`, `备注`). The parser reads both sets — and a full-width `：` — whatever the setting, so a document may mix them, and an updated entry keeps the language it was written in. Machine keys in the comment are always English.
 
+**Hits and Last seen:** the values written in a block are the ones it was created with (`Hits: 1`, the time of capture) or whatever a person typed there since. A repeat never rewrites the block: it is counted in this machine's `state.json`, keyed by ID, so two devices that both hit the same error never touch the same lines and their git histories merge cleanly (§4.3). Every count the plugin shows — notices, the session digest, `err_lookup`, `err_list`, `err_stats` — is the block's hits plus this machine's, with the later of the two last-seen times, so the numbers may differ between devices while the knowledge agrees. Deleting `state.json` drops the counts back to what the blocks say. Editing a fix, status or notes (by hand or through `err_record`) still rewrites that one block.
+
 **Parsing rules:** blocks split on `^## (E-\d+) ·`; the `<!-- errkb: ... -->` comment supplies the machine fields; `- Fix:` (or `- 解法:`) runs until the next line that opens a known field, so a fix may hold blank lines, bullets and code. **Your hand edits win over the index** — the index is only a cache, so a fix you type in any Markdown editor is used on the very next hit. Every block keeps its exact text: reading and writing a document back is byte-identical, and an update rewrites only the entry it changes.
 
 **Strict where it matters:** a git conflict marker, a malformed entry header, a missing machine comment, a duplicate ID, an unknown status or an unterminated code fence makes the document unparseable. It is then saved aside once as `ERRORS.corrupt-<timestamp>.md`, new entries are only appended, and updates are refused until it is repaired.
@@ -289,7 +292,7 @@ re-diagnosing or researching.
 
 **Hard caps, and the caps are the point.** One notice per step, three per turn, two per ID per session; each notice ≤ 120 tokens by a conservative estimate (every non-ASCII character one token, ASCII three characters a token) and ≤ 400 characters. A long cause gives way first, then the fix; the closing instruction is never cut. The plugin-source `summary` goes through dsh-llm's own `boundContextSummary`, so it is ≤ 120 characters, for the `{kind: 'plugin', plugin: 'err-kb', form: 'notice', summary}` message shape (`MessageSourceMap['plugin']` in `@deepseek-ai/dsh-llm`). An entry whose status is `fixed` announces itself once and then goes quiet. An uncapped version of this plugin would be worse than no plugin: a hit rate bought with constant noise turns a saving into a cost.
 
-**A fix that does not work stops being pushed** ([`docs/discussions.md`](docs/discussions.md) §4). When the same entry is captured again later in the turn that injected its fix, that counts as a recurrence: after one, the notice changes to "This fix failed here last time; verify before applying."; after two with no recorded success, the entry is not injected on this machine any more. Editing the entry's fix starts the count again. The counters are machine-local and never touch `ERRORS.md`; for now they live in memory, and they move to `state.json` with `src/state.ts`.
+**A fix that does not work stops being pushed** ([`docs/discussions.md`](docs/discussions.md) §4). When the same entry is captured again later in the turn that injected its fix, that counts as a recurrence: after one, the notice changes to "This fix failed here last time; verify before applying."; after two with no recorded success, the entry is not injected on this machine any more. Editing the entry's fix starts the count again. The counters are machine-local and never touch `ERRORS.md`: they live in `state.json` under `trust`, so a suppressed fix stays suppressed after a restart, on this machine only. Deleting `state.json` resets them.
 
 Every cap is configurable downwards, and `inject: 'off'` stops every notice while capture keeps recording. The session digest and the standing section have their own switches, `sessionDigest: 'off'` and `systemPromptHint: false`.
 
@@ -341,7 +344,8 @@ The extension points below were verified against the local installation, not aga
 > **Nothing is published, and the plugin is not installed anywhere yet.** The
 > first two commands work as of T01–T04 — `pnpm install` and `pnpm build` both
 > exit 0 and produce `lib/index.js` — but adding the package to a profile is
-> untested until T17, and there is no behaviour to observe once it is there.
+> untested until T17. Once added, it records and injects as described in
+> [What works today](#what-works-today).
 
 ```sh
 cd <repo-root>
@@ -383,10 +387,10 @@ That block in [Injection](#injection-when-it-speaks-and-how-much) is the entire 
 
 All five declare their output through `output.schema` + `render` (`ToolOutputDefinition` in `@deepseek-ai/dsh-tools`), as dsh-note does, so what reaches the model is controlled plain text; they are built with `defineTool` and registered with `ctx.tools.register()`.
 
-- **`err_record` is the only way a fix is written.** With `id`, the fix goes through the recorder's `recordFix()` (the entry becomes `fixed`), then status and note in one more write, so an explicit `status` wins. With `message`, the text is matched like a captured error (its headline, under `category` or every category); a hit updates that entry without counting a hit, a miss appends a new entry under `category`, default `agent`. Matching and appending run in one write, so two calls about one new error create one entry.
+- **`err_record` is the only way a fix is written.** With `id`, the fix goes through the recorder's `recordFix()` (the entry becomes `fixed`), then status and note in one more write, so an explicit `status` wins. With `message`, the text is matched like a captured error (its headline, under `category` or every category); only an exact hit updates that entry (without counting a hit); a near hit — fuzzy or by code — writes nothing and returns `closest match is E-0007 (approximate, by fuzzy); nothing was written. Call err_record with id: "E-0007" to confirm, or reword message`, so a fix never lands on a similar but different entry; a miss appends a new entry under `category`, default `agent`. Matching and appending run in one write, so two calls about one new error create one entry.
 - **Every write takes the capture path.** All of them queue on the knowledge base's one write chain, with the same 500 ms budget and retries; the store redacts every text. A busy lock or a failed write comes back as an error, never as a throw.
 - **Errors are values.** A wrong argument type or an unknown `status`/`scope` is refused by `defineTool`'s validation (`ToolArgsError`); everything else — both or neither of `id` and `message`, an unknown ID, an empty fix, an unreadable `ERRORS.md` — returns one `error` line, such as `err_record: no entry E-0042`.
-- **The token estimate is labelled an estimate.** `err_stats` computes *notices that carried a fix × 800 − the tokens of every notice delivered*. 800 is the low end of the 800–3000 tokens §7 puts on a re-diagnosis; the standing costs (the system-prompt section on every request, the session digest) are not subtracted.
+- **The token estimate is labelled an estimate.** `err_stats` computes *notices that carried a fix × 800 − the tokens of every notice delivered*. 800 is the low end of the 800–3000 tokens §7 puts on a re-diagnosis; the standing costs (the system-prompt section on every request, the session digest) are not subtracted. The figure never goes below 0: when the notices cost more than they are assumed to have saved — notices delivered, none with a fix — it shows 0 and the line spells out the negative arithmetic, e.g. `0 fix notices × 800 − 60 notice tokens = −60, shown as 0`.
 
 ## Configuration
 
@@ -453,7 +457,7 @@ The plugin's own mistakes must never become the agent's problem. Each risk below
 
 | Risk                                              | Constraint                                                                                             |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| A listener throws and the turn closes             | Every listener is wrapped in `try/catch`; failure degrades to "not recorded this time", counted in `state.json` and reported at a throttled rate |
+| A listener throws and the turn closes             | Every listener is wrapped in `try/catch`; failure degrades to "not recorded this time", counted (in memory) and reported at a throttled rate |
 | Stealing recovery from `dsh-llm-retry`            | `agent/request-error` must `await next()` and return the result unchanged — observe, never take over    |
 | A write blocking the turn                         | Local write, 3 retries, 500 ms timeout; a timeout skips that record silently and never throws            |
 | Multiple processes writing at once (web + headless) | `.lock` file opened with `wx` (10 s expiry, preemptible; a waiter removes only the stale lock it saw, by token) plus a temp file and an atomic `rename`        |
@@ -462,7 +466,7 @@ The plugin's own mistakes must never become the agent's problem. Each risk below
 | Secrets or privacy leaking into a public repo     | Mandatory redaction before storage; with `share: 'public'` even the `requestId` is dropped               |
 | Unbounded growth slowing the context              | `maxEntries` archiving, 400-character entries, injection de-duplication and the per-step/turn/session caps |
 
-**How much of this runs today (T11).** The listeners are wrapped as above: a failure is counted, logged at most once a minute through the plugin's logger, and never thrown. Failure counts are held in memory until `state.json` arrives with `src/state.ts`. Writes happen off the turn, one at a time per knowledge base, each with a 500 ms budget for up to 3 retries and the lock wait; a lock still busy when the budget runs out skips the record silently. A write that already holds the lock is not cut off midway, since the store cannot abandon one safely. A document that does not parse is not retried and stops recording until it is repaired. The redaction, lock, atomic-write and corrupt-document rows are the store's (T07–T08) and apply to every write. No promise the plugin starts is left without a handler: the lookup `tools/post-execute` starts before `await next()` is guarded the moment it is created, so a malformed tool result (say `isError` with no `error`) is counted and the downstream decision passes through, instead of an unhandled rejection that could take the host process down.
+**How much of this runs today (T11).** The listeners are wrapped as above: a failure is counted, logged at most once a minute through the plugin's logger, and never thrown. Failure counts stay in memory for the life of the process and are not written to `state.json`; only hit counters and fix-trust counters are. A `state.json` that is not valid JSON or not version 1 is never fatal: it reads as empty (the counts fall back to the blocks), is reported once, and is saved aside as `state.corrupt-<timestamp>.json` by the next write. Writes to `state.json` take the same `.lock` as `ERRORS.md`, replace the file atomically, and share the write's 500 ms budget. Writes happen off the turn, one at a time per knowledge base, each with a 500 ms budget for up to 3 retries and the lock wait; a lock still busy when the budget runs out skips the record silently. A write that already holds the lock is not cut off midway, since the store cannot abandon one safely. A document that does not parse is not retried and stops recording until it is repaired. The redaction, lock, atomic-write and corrupt-document rows are the store's (T07–T08) and apply to every write. No promise the plugin starts is left without a handler: the lookup `tools/post-execute` starts before `await next()` is guarded the moment it is created, so a malformed tool result (say `isError` with no `error`) is counted and the downstream decision passes through, instead of an unhandled rejection that could take the host process down.
 
 **What it will never do:** take over retries, throw into a turn, rewrite a corrupt document, block a turn on a write, or send anything off the machine.
 
@@ -524,7 +528,7 @@ The design is complete and the work is broken into **eighteen tasks** across sev
 | 🔜    | T16–T17 — LLM failure integration, and installation into the web profile                |
 | 🔜    | T18 — optional: Obsidian export                                                         |
 
-T01–T15 are checked off. T01–T13 are merged upstream; T14 and T15 are not yet. The rest are open; T18 can be dropped at any point without touching the main line.
+T01–T15 are checked off and merged upstream (T14 and T15 in PR #12). The rest are open; T18 can be dropped at any point without touching the main line.
 
 ### Milestone mapping
 
@@ -573,7 +577,7 @@ Two gaps are worth stating plainly rather than hiding behind the checkboxes:
 
 ## Development
 
-The skeleton exists (T01–T04), so all of these work. `build`, `typecheck`, `lint`, `test` and `format:check` are exactly what CI runs on every pull request:
+The skeleton exists (T01–T04), so all of these work. `build`, `typecheck`, `lint`, `test` and `format:check` are exactly what CI runs on every push to `main` and every pull request:
 
 ```sh
 pnpm install
@@ -607,13 +611,13 @@ Everything below is a specification of intended behaviour, not a report of obser
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | "Is it even loaded?"                               | The one-line startup log prints the resolved KB path; `dsh --profile web --dump-config` shows the `err-kb` entry. Restart after installing — `dsh.profile.bundles` is not hot-reloaded |
 | "Where did my errors go?"                          | `err_stats` prints the resolved path. Start from [Where the knowledge base lives](#where-the-knowledge-base-lives) |
-| "Nothing is being recorded."                       | Check the `capture` toggles, `captureExitCodes`, and whether the failure is transient (`RATE_LIMIT`, `SERVER`, `TIMEOUT`, `TRANSPORT`, `EMPTY_RESPONSE`) — those are counted until `transientThreshold`, and every counter is visible in `state.json` |
+| "Nothing is being recorded."                       | Check the `capture` toggles, `captureExitCodes`, and whether the failure is transient (`RATE_LIMIT`, `SERVER`, `TIMEOUT`, `TRANSPORT`, `EMPTY_RESPONSE`) — those are counted, per session and in memory, until `transientThreshold`; once an entry exists, its repeats are counted in `state.json` |
 | "Writes are silently skipped."                     | That is the designed behaviour when the KB directory is unwritable, the lock cannot be taken, or a write times out after 3 retries and 500 ms. Check the KB directory's permissions and whether the fallback to `$DSH_HOME/errkb/` took effect |
 | "Injection is too noisy."                          | `inject: 'off'` stops it entirely while capture keeps recording; `systemPromptHint: false` removes the standing 50-token section; `sessionDigest: 'off'` removes the opening digest |
 | "One entry keeps being injected with the wrong fix." | Mark it `wontfix` via `err_record`, or flag it as a misjudgment — it stops being injected automatically but still counts |
 | "`ERRORS.md` looks broken."                        | The plugin never rewrites a document it cannot parse: the original is saved as `ERRORS.corrupt-<timestamp>.md` and new entries append after it. Repair the saved copy and restore it |
 | "I edited a fix by hand and nothing changed."      | Hand edits win over the index, so this should not happen — check that the edit is inside the `- Fix:` (or `- 解法:`) field and above the next field label, then delete `errors.index.json` to force a rebuild |
-| "I want to start over."                            | Delete `state.json` (counters), delete `errors.index.json` (cache). Both are rebuilt. Deleting `ERRORS.md` deletes the knowledge — that is the only file that matters |
+| "I want to start over."                            | Delete `state.json` (this machine's hit and fix-trust counters: counts fall back to the Hits written in `ERRORS.md`, trust starts over), delete `errors.index.json` (cache). Both are recreated. Deleting `ERRORS.md` deletes the knowledge — that is the only file that matters |
 | "Counters disagree across my two machines."        | Expected: counters are machine-local and deliberately not in git. Only the knowledge is shared |
 
 ## Uninstall
@@ -679,12 +683,15 @@ Where `dsh-errkb` sits: **stable, human-readable IDs** (`E-0007`) that survive a
 
 ## Contributing
 
-There is no code to contribute yet — which makes this the cheapest moment to disagree with the design.
+T01–T15 are implemented and tested; T16 and T17 are open, and nothing is installed or published yet. Contributions are welcome — fixes, tests, a review of the design, or disagreement with it while the open §17 decisions are still cheap to change.
 
 - **The design document is the source of truth.** If this README and [`docs/设计说明书.md`](docs/设计说明书.md) disagree, the design document wins (and this README has a bug worth reporting).
 - **Feedback goes in the document.** §17 is a table with an empty "your answer" column; §19 is an annotation area. Both are meant to be written in directly.
 - **Keep the two READMEs in sync.** `README.md` is English and `README.zh-CN.md` is Chinese, and they have already drifted once. Any change to one belongs in the same change as the other.
 - **Language rules for the repository**: English for `README.md` and for code, comments, commits and documentation; Chinese for `README.zh-CN.md` and for the design document, which is written in Chinese by choice.
+- **`pnpm test` enforces the coverage gate.** It runs vitest with coverage and fails under 99% statements or lines; run it with `pnpm typecheck`, `pnpm lint`, `pnpm format:check` and `pnpm build` before you push — CI runs the same five.
+- **The privacy guard must pass.** `.github/workflows/privacy-guard.yml` rejects absolute user paths, personal e-mail addresses and credential-shaped tokens anywhere in the tree; write `<repo-root>` and other placeholders instead.
+- **One task per commit**, with a conventional prefix and the task tag: `feat: add the five err_ tools (T15)`, `fix: … (T15)`, `docs: …`.
 
 ## License
 

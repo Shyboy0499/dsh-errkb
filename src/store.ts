@@ -583,6 +583,84 @@ export class StoreCorruptError extends Error {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The lock and the atomic write, shared with state.ts.
+
+/** How the `.lock` is taken: the store's three lock settings. */
+export type LockOptions = Pick<
+  StoreOptions,
+  "lockStaleMs" | "lockTimeoutMs" | "lockRetryMs"
+>;
+
+/**
+ * Run `fn` holding the knowledge base's `.lock` (§13): created with `wx`, one
+ * older than `lockStaleMs` is taken over, and waiting gives up after
+ * `lockTimeoutMs` with a LockTimeoutError. The store and state.json take the
+ * same lock, so one process never writes either while another is mid-write.
+ *
+ * @param lock - the `.lock` path; its directory is created first.
+ */
+export async function withFileLock<T>(
+  lock: string,
+  o: LockOptions,
+  fs: StoreFs,
+  clock: StoreClock,
+  fn: () => Promise<T>,
+): Promise<T> {
+  // Take over the stale lock whose token was `held`, and nothing else. Two
+  // waiters can judge the same lock stale; the first removes it and creates its
+  // own, and without this re-check the second would then remove that fresh
+  // lock and both would hold "the lock". Tokens are unique per acquisition, so
+  // an unchanged token means the file is still the one judged stale. What is
+  // left is the gap between this read and the remove: another waiter would
+  // have to remove and re-create the lock inside it. That is two filesystem
+  // calls racing one, not a judgment that can be seconds old, and closing it
+  // fully would need an atomic compare-and-delete the filesystem does not
+  // offer.
+  async function removeIfUnchanged(held: string | undefined): Promise<void> {
+    if ((await fs.readFile(lock)) === held) await fs.remove(lock);
+  }
+
+  await fs.mkdir(dirname(lock));
+  const token = `${process.pid}-${randomBytes(6).toString("hex")}`;
+  const deadline = clock.now().getTime() + o.lockTimeoutMs;
+  for (;;) {
+    if (await fs.createExclusive(lock, token)) break;
+    const held = await fs.readFile(lock);
+    const mtime = await fs.mtimeMs(lock);
+    const now = clock.now().getTime();
+    if (mtime !== undefined && now - mtime > o.lockStaleMs) {
+      await removeIfUnchanged(held);
+      continue;
+    }
+    if (now >= deadline) throw new LockTimeoutError(lock);
+    await clock.sleep(o.lockRetryMs * (0.5 + clock.random()));
+  }
+  try {
+    return await fn();
+  } finally {
+    // Only release our own lock: if this write outlived lockStaleMs and
+    // someone took over, the lock on disk is theirs now.
+    if ((await fs.readFile(lock)) === token) await fs.remove(lock);
+  }
+}
+
+/** Write `data` to a temp file beside `path`, then rename it over `path`. */
+export async function writeFileAtomic(
+  fs: StoreFs,
+  path: string,
+  data: string,
+): Promise<void> {
+  const temp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+  await fs.writeFile(temp, data);
+  try {
+    await fs.rename(temp, path);
+  } catch (error) {
+    await fs.remove(temp);
+    throw error;
+  }
+}
+
 /** The document store bound to one knowledge base directory. */
 export interface ErrorStore {
   /** Parse the current document; a missing file is an empty document. */
@@ -627,57 +705,10 @@ export function createStore(
   const o: StoreOptions = { ...DEFAULT_STORE_OPTIONS, ...options };
   const dir = dirname(files.errors);
   const clean = (text: string) => redact(text.replace(/\r/g, ""), o).trim();
-
-  // Take over the stale lock whose token was `held`, and nothing else. Two
-  // waiters can judge the same lock stale; the first removes it and creates its
-  // own, and without this re-check the second would then remove that fresh
-  // lock and both would hold "the lock". Tokens are unique per acquisition, so
-  // an unchanged token means the file is still the one judged stale. What is
-  // left is the gap between this read and the remove: another waiter would
-  // have to remove and re-create the lock inside it. That is two filesystem
-  // calls racing one, not a judgment that can be seconds old, and closing it
-  // fully would need an atomic compare-and-delete the filesystem does not
-  // offer.
-  async function removeIfUnchanged(held: string | undefined): Promise<void> {
-    if ((await fs.readFile(files.lock)) === held) await fs.remove(files.lock);
-  }
-
-  async function withLock<T>(fn: () => Promise<T>): Promise<T> {
-    await fs.mkdir(dir);
-    const token = `${process.pid}-${randomBytes(6).toString("hex")}`;
-    const deadline = clock.now().getTime() + o.lockTimeoutMs;
-    for (;;) {
-      if (await fs.createExclusive(files.lock, token)) break;
-      const held = await fs.readFile(files.lock);
-      const mtime = await fs.mtimeMs(files.lock);
-      const now = clock.now().getTime();
-      if (mtime !== undefined && now - mtime > o.lockStaleMs) {
-        await removeIfUnchanged(held);
-        continue;
-      }
-      if (now >= deadline) throw new LockTimeoutError(files.lock);
-      await clock.sleep(o.lockRetryMs * (0.5 + clock.random()));
-    }
-    try {
-      return await fn();
-    } finally {
-      // Only release our own lock: if this write outlived lockStaleMs and
-      // someone took over, the lock on disk is theirs now.
-      if ((await fs.readFile(files.lock)) === token)
-        await fs.remove(files.lock);
-    }
-  }
-
-  async function writeAtomic(path: string, data: string): Promise<void> {
-    const temp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
-    await fs.writeFile(temp, data);
-    try {
-      await fs.rename(temp, path);
-    } catch (error) {
-      await fs.remove(temp);
-      throw error;
-    }
-  }
+  const withLock = <T>(fn: () => Promise<T>) =>
+    withFileLock(files.lock, o, fs, clock, fn);
+  const writeAtomic = (path: string, data: string) =>
+    writeFileAtomic(fs, path, data);
 
   async function saveAside(text: string): Promise<string | undefined> {
     for (const name of await fs.list(dir)) {

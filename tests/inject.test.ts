@@ -687,6 +687,46 @@ describe("Injector", () => {
 // ---------------------------------------------------------------------------
 // T13: scoped trust, observe(), the digest and the standing section
 
+describe("fix trust: a store that loads asynchronously (state.json)", () => {
+  const record = (fix: string, recurred = 0) => ({
+    injected: 1,
+    recurredAfterInject: recurred,
+    succeeded: 0,
+    fixSig: fixSig(fix),
+  });
+
+  it("saved records join once read; one that changed meanwhile is kept", async () => {
+    let finish: (state: TrustState | undefined) => void = () => undefined;
+    const saves: TrustState[] = [];
+    const trust = new FixTrust({
+      load: () => ({ entries: {} }),
+      save: (state) => saves.push(structuredClone(state)),
+      loaded: new Promise((resolve) => {
+        finish = resolve;
+      }),
+    });
+    // Before the read lands, this process injects E-0001's fix.
+    trust.injected("E-0001", "fresh");
+    finish({
+      entries: { "E-0001": record("stale", 2), "E-0002": record("b", 2) },
+    });
+    await trust.ready;
+    expect(trust.record("E-0001", "fresh")).toMatchObject({ injected: 1 });
+    expect(trust.level("E-0002", "b")).toBe("suppressed");
+    expect(saves).toHaveLength(1);
+  });
+
+  it("nothing saved: the state stays as load() gave it", async () => {
+    const trust = new FixTrust({
+      load: () => ({ entries: { "E-0001": record("a") } }),
+      save: () => undefined,
+      loaded: Promise.resolve(undefined),
+    });
+    await trust.ready;
+    expect(trust.snapshot().entries).toEqual({ "E-0001": record("a") });
+  });
+});
+
 describe("fix trust scopes (T13)", () => {
   it("a recurrence counts only in the scope that injected the fix", () => {
     const trust = new FixTrust();

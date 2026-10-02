@@ -28,6 +28,12 @@
 //   written. This closes the T10 gap where every repeat after the promotion
 //   came back `count-only` and went uncounted.
 //
+// A bump never touches ERRORS.md (§4.3): it counts in this machine's
+// state.json (src/state.ts), so the block stays byte-identical and two devices
+// that hit the same error merge cleanly in git. Every entry the recorder hands
+// out - to match(), the notices, the digest and the tools - is the effective
+// one: the block's hits plus this machine's, through effectiveEntry().
+//
 // Safety (§13). Listeners only classify and enqueue: they never await, and a
 // throw anywhere is caught, counted and logged at most once a minute through
 // the logger. Writes are chained per knowledge base so they run one at a time
@@ -64,7 +70,6 @@ import {
   estimateTokens,
   SYSTEM_PROMPT_HINT,
   SYSTEM_PROMPT_SECTION,
-  memoryTrustStore,
   noticeSource,
   sessionDigestText,
 } from "./inject";
@@ -82,6 +87,8 @@ import { ResolutionTracker, callOutcome } from "./resolve-detect";
 import type { CaptureFixMode } from "./resolve-detect";
 import type { Hit, IndexedEntry, MatchOptions, MatchResult } from "./match";
 import type { KbFiles } from "./paths";
+import { addHit, createStateFile, effectiveEntry } from "./state";
+import type { MachineState, StateFile } from "./state";
 import {
   DEFAULT_STORE_OPTIONS,
   LockTimeoutError,
@@ -151,7 +158,7 @@ export interface RecorderLogger {
 
 /** Everything a recorder needs; the filesystem and clock are injectable. */
 export interface RecorderDeps {
-  files: Pick<KbFiles, "errors" | "archive" | "lock">;
+  files: Pick<KbFiles, "errors" | "archive" | "lock" | "state">;
   logger: RecorderLogger;
   options?: Partial<RecorderOptions>;
   fs?: StoreFs;
@@ -249,9 +256,17 @@ export interface Recorder {
   /**
    * Run any store operation on the same path as recordFix(): queued behind
    * every earlier write, under the same budget and retries (T15's other
-   * writes: status and notes, a new entry, an archived one). Never rejects.
+   * writes: status and notes, a new entry, an archived one). `state` is this
+   * machine's state.json, under the same budget. Never rejects.
    */
-  write<T>(task: (store: ErrorStore) => Promise<T>): Promise<WriteOutcome<T>>;
+  write<T>(
+    task: (store: ErrorStore, state: StateFile) => Promise<T>,
+  ): Promise<WriteOutcome<T>>;
+  /**
+   * This machine's state.json, read like entries(); a corrupt file reads as
+   * empty. Undefined when the read failed.
+   */
+  machineState(): Promise<MachineState | undefined>;
   /** Count a failure and log it, at most once a minute; never throws. */
   fail(error: unknown): void;
   /** Settles once every write queued so far has finished. */
@@ -373,6 +388,16 @@ export function toolInput(
 // ---------------------------------------------------------------------------
 // The recorder
 
+/** The indexed effective entries, and the baselines they were built on. */
+interface Snapshot {
+  /** ERRORS.md's and state.json's mtimes when this was read. */
+  mtime: number | undefined;
+  stateMtime: number | undefined;
+  index: IndexedEntry[];
+  /** Each entry as written in ERRORS.md, by ID. */
+  baseline: Map<string, Entry>;
+}
+
 /** What budgeted() returns when the write budget ran out. */
 const TIMEOUT = Symbol("timeout");
 
@@ -396,6 +421,7 @@ export function createRecorder(deps: RecorderDeps): Recorder {
   const fs = deps.fs ?? nodeStoreFs();
   const clock = deps.clock ?? systemClock();
   const key = deps.files.errors;
+  const stateFile = deps.files.state;
   const counters = new Map<string, TransientCounter>();
   const outcomes: RecordOutcome[] = [];
   const stats: RecorderStats = {
@@ -405,8 +431,10 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     timeouts: 0,
     failures: 0,
   };
-  let cache: { mtime: number | undefined; index: IndexedEntry[] } | undefined;
+  let cache: Snapshot | undefined;
   let lastLog: number | undefined;
+  // A corrupt state.json is reported once, until a write saves it aside.
+  let reportedCorrupt = false;
 
   const now = () => clock.now().getTime();
 
@@ -438,14 +466,47 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     return counter;
   }
 
-  /** The indexed entries, re-read only when ERRORS.md changed on disk. */
-  async function currentIndex(store: ErrorStore): Promise<IndexedEntry[]> {
+  /** This machine's state; a corrupt file reads as empty and is reported once. */
+  async function readState(state: StateFile): Promise<MachineState> {
+    const read = await state.read();
+    if (read.corrupt && !reportedCorrupt) {
+      reportedCorrupt = true;
+      fail(
+        new Error(
+          "state.json is not valid; hit counts fall back to ERRORS.md until the next write saves it aside",
+        ),
+      );
+    }
+    return read.state;
+  }
+
+  /**
+   * The indexed effective entries, re-read only when ERRORS.md or state.json
+   * changed on disk.
+   */
+  async function currentIndex(
+    store: ErrorStore,
+    state: StateFile,
+  ): Promise<Snapshot> {
     const mtime = await fs.mtimeMs(key);
-    if (cache !== undefined && cache.mtime === mtime) return cache.index;
+    const stateMtime = await fs.mtimeMs(stateFile);
+    if (
+      cache !== undefined &&
+      cache.mtime === mtime &&
+      cache.stateMtime === stateMtime
+    )
+      return cache;
     const document = await store.read();
-    const index = indexEntries(document.blocks.map((block) => block.entry));
-    cache = { mtime, index };
-    return index;
+    const machine = await readState(state);
+    const baseline = new Map<string, Entry>();
+    const index = indexEntries(
+      document.blocks.map(({ entry }) => {
+        baseline.set(entry.id, entry);
+        return effectiveEntry(entry, machine.entries[entry.id]);
+      }),
+    );
+    cache = { mtime, stateMtime, index, baseline };
+    return cache;
   }
 
   /** Match a classified record against the index. */
@@ -464,37 +525,46 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     );
   }
 
-  /** Bump an entry's hits and last-seen; undefined when it is gone. */
+  /**
+   * Bump an entry's hits and last-seen in state.json; ERRORS.md is not
+   * touched (§4.3).
+   *
+   * @returns the hit, with the effective count after it.
+   */
   async function bump(
-    store: ErrorStore,
-    entry: Entry,
-  ): Promise<Written | undefined> {
-    const updated = await store.update(entry.id, {
-      hits: entry.hits + 1,
-      lastSeen: formatSeen(clock.now()),
+    state: StateFile,
+    snapshot: Snapshot,
+    id: string,
+  ): Promise<Written> {
+    const at = formatSeen(clock.now());
+    const written = await state.update((machine) => {
+      addHit(machine, id, at);
     });
+    if (written.savedAs !== undefined) reportedCorrupt = false;
     cache = undefined;
-    if (updated === undefined) return undefined;
-    return { kind: "hit", id: updated.id, hits: updated.hits };
+    const entry = effectiveEntry(
+      snapshot.baseline.get(id) as Entry,
+      written.state.entries[id],
+    );
+    return { kind: "hit", id, hits: entry.hits };
   }
 
   /** One attempt at writing a classified error. */
   async function once(
     store: ErrorStore,
+    state: StateFile,
     { decision, record }: Classified,
   ): Promise<Written> {
-    const index = await currentIndex(store);
+    const snapshot = await currentIndex(store, state);
+    const { index } = snapshot;
     if (decision === "count-only") {
       const known = index.find((i) => i.sig === record.signature);
-      const outcome =
-        known === undefined ? undefined : await bump(store, known.entry);
-      return outcome ?? { kind: "counted" };
+      return known === undefined
+        ? { kind: "counted" }
+        : bump(state, snapshot, known.entry.id);
     }
     const found = matchRecord(record, index);
-    if (found.matched) {
-      const outcome = await bump(store, found.entry);
-      if (outcome !== undefined) return outcome;
-    }
+    if (found.matched) return bump(state, snapshot, found.id);
     const { id } = await store.append({
       title: record.title,
       signature: record.signature,
@@ -515,18 +585,30 @@ export function createRecorder(deps: RecorderDeps): Recorder {
    * @returns what `write` returned, or `TIMEOUT` when the budget ran out.
    */
   async function budgeted<T>(
-    write: (store: ErrorStore) => Promise<T>,
+    write: (store: ErrorStore, state: StateFile) => Promise<T>,
   ): Promise<T | typeof TIMEOUT> {
     const deadline = now() + WRITE_TIMEOUT_MS;
     for (let attempt = 0; ; attempt++) {
+      // One budget for both files: each lock wait gets what is left of it.
+      const lockTimeoutMs = () => Math.max(0, deadline - now());
       const store = createStore(
         deps.files,
-        { ...o, lockTimeoutMs: Math.max(0, deadline - now()) },
+        { ...o, lockTimeoutMs: lockTimeoutMs() },
         fs,
         clock,
       );
+      const state: StateFile = {
+        read: () => createStateFile(deps.files, {}, fs, clock).read(),
+        update: (mutate) =>
+          createStateFile(
+            deps.files,
+            { lockTimeoutMs: lockTimeoutMs() },
+            fs,
+            clock,
+          ).update(mutate),
+      };
       try {
-        return await write(store);
+        return await write(store, state);
       } catch (error) {
         cache = undefined;
         if (error instanceof LockTimeoutError) return TIMEOUT;
@@ -539,7 +621,9 @@ export function createRecorder(deps: RecorderDeps): Recorder {
 
   /** Write one classified error within the time budget, with retries. */
   async function persist(classified: Classified): Promise<Written> {
-    const outcome = await budgeted((store) => once(store, classified));
+    const outcome = await budgeted((store, state) =>
+      once(store, state, classified),
+    );
     return outcome === TIMEOUT ? { kind: "timeout" } : outcome;
   }
 
@@ -580,7 +664,11 @@ export function createRecorder(deps: RecorderDeps): Recorder {
   function read(): Promise<IndexedEntry[] | undefined> {
     return queued(key, async () => {
       try {
-        return await currentIndex(createStore(deps.files, o, fs, clock));
+        const snapshot = await currentIndex(
+          createStore(deps.files, o, fs, clock),
+          createStateFile(deps.files, {}, fs, clock),
+        );
+        return snapshot.index;
       } catch (error) {
         cache = undefined;
         fail(error);
@@ -590,7 +678,7 @@ export function createRecorder(deps: RecorderDeps): Recorder {
   }
 
   function write<T>(
-    task: (store: ErrorStore) => Promise<T>,
+    task: (store: ErrorStore, state: StateFile) => Promise<T>,
   ): Promise<WriteOutcome<T>> {
     return queued(key, async (): Promise<WriteOutcome<T>> => {
       try {
@@ -645,6 +733,17 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     },
 
     entries: read,
+
+    machineState() {
+      return queued(key, async () => {
+        try {
+          return await readState(createStateFile(deps.files, {}, fs, clock));
+        } catch (error) {
+          fail(error);
+          return undefined;
+        }
+      });
+    },
 
     write,
 
@@ -724,8 +823,9 @@ export function createRecorder(deps: RecorderDeps): Recorder {
 // read its context and is never injected.
 //
 // Fix trust is one FixTrust per plugin instance over an injectable TrustStore
-// (memory until state.json exists), scoped per session, so a recurrence is
-// counted only within the session and turn that injected the fix.
+// (state.json's `trust` by default, see stateTrustStore()), scoped per
+// session, so a recurrence is counted only within the session and turn that
+// injected the fix.
 //
 // Resolution detection (T14) rides `tools/result`. Each session keeps a
 // ResolutionTracker (src/resolve-detect.ts, where the rule and the window are
@@ -760,7 +860,7 @@ export const DEFAULT_INJECTION_OPTIONS: InjectionOptions = {
 export interface InjectionDeps {
   recorder: Recorder;
   options?: Partial<InjectionOptions>;
-  /** Where fix trust lives; memory by default. */
+  /** Where fix trust lives; state.json by default. */
   trust?: TrustStore;
   /** Lower notice budgets, for every session. */
   caps?: Partial<CapLimits>;
@@ -877,6 +977,38 @@ function counted(hit: Hit): Hit {
 }
 
 /**
+ * Fix trust kept in state.json under `trust` (§4.3, T12): machine-local, so
+ * a fix suppressed here stays suppressed after a restart and on no other
+ * device. The saved records are read once through the recorder and join the
+ * in-memory state through FixTrust's `ready`. Every save queues a write of
+ * this process's records over what is on disk, on the recorder's write chain
+ * and under its lock and budget: records of IDs this process never touched -
+ * another harness's on the same machine - are kept, and for an ID both
+ * touched the later save wins. A failed or timed-out save is counted like any
+ * write, and the next save writes the full set again.
+ *
+ * @param recorder - the recorder whose knowledge base holds state.json.
+ */
+export function stateTrustStore(recorder: Recorder): TrustStore {
+  return {
+    load: () => ({ entries: {} }),
+    loaded: recorder
+      .machineState()
+      .then((state) =>
+        state === undefined ? undefined : { entries: state.trust },
+      ),
+    save(state) {
+      const entries = structuredClone(state.entries);
+      void recorder.write((_store, file) =>
+        file.update((machine) => {
+          Object.assign(machine.trust, entries);
+        }),
+      );
+    },
+  };
+}
+
+/**
  * Bind the four injection points to a recorder.
  *
  * @param deps - the recorder, settings, trust store and caps.
@@ -885,7 +1017,7 @@ function counted(hit: Hit): Hit {
 export function createInjection(deps: InjectionDeps): Injection {
   const o: InjectionOptions = { ...DEFAULT_INJECTION_OPTIONS, ...deps.options };
   const { recorder } = deps;
-  const trust = new FixTrust(deps.trust ?? memoryTrustStore());
+  const trust = new FixTrust(deps.trust ?? stateTrustStore(recorder));
   const sessions = new Map<string, SessionState>();
   // A tool miss whose write will name the ID, keyed by the execution object
   // that `tools/post-execute` and `tools/result` both receive (the registry

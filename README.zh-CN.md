@@ -13,8 +13,8 @@
 > **状态：P5 已完成。** 设计文档已写完、正在审查中 —— 其中 §17 的 8 项里还有 6 项
 > 未拍板（第 2、4 问已定）—— 工作被拆成 **18 个 task**，归入 7 个里程碑。
 > **T01–T15 已完成：** 包装得上、构建得出、过得了类型检查与 lint、格式与测试也都
-> 跑得通（99% 覆盖率门槛已真正生效），CI 在每次 PR 上都会执行这五步；纯本地层
-> 已经齐全：知识库目录解析（T05）、报错规范化与指纹（T06）、强制脱敏（T07）、
+> 跑得通（99% 覆盖率门槛已真正生效），CI 在每次推送到 `main` 与每次 PR 上
+> 都会执行这五步；纯本地层已经齐全：知识库目录解析（T05）、报错规范化与指纹（T06）、强制脱敏（T07）、
 > `ERRORS.md` 存储（T08）与匹配（T09）。采集层已经接通：分类与噪声规则（T10），
 > 以及前两个钩子 `agent/error` 与 `tools/result`（T11）。注入层已经开口：通知
 > 文本、上限与解法信任（T12）已接到四个注入点上（T13），解决检测（T14）把闭环补上。
@@ -26,7 +26,7 @@
 > 信任；没有解法的条目会收到一次提示，请模型用 `err_record` 记下解法（T14、T15），
 > 由它写进 `ERRORS.md`。还缺：LLM 请求失败的采集（T16），以及安装进 profile（T17）
 > —— 目前还没有任何东西替你装上它，所以只有你自己把插件加进 profile 之后，模型才
-> 看得到这些工具。下面标着「尚未实现」的部分，依然只是目标路径的描述。
+> 看得到这些工具。下面凡是属于 T16–T18 的部分，依然只是目标路径的描述。
 >
 > - 设计文档：[`docs/设计说明书.md`](docs/设计说明书.md) —— 19 节
 > - 它将来会做什么：[它怎么工作](#它怎么工作)
@@ -80,12 +80,12 @@
 | `src/store.ts` —— 解析、渲染、追加、归档                                 | ✅ 就位（T08），语句与行覆盖 100% —— 由 T11 的监听器与 T15 的工具写入；为 `err_forget` 新增 `archive(id, reason)` |
 | `seeds/ERRORS.seed.md` —— 三条精选、已脱敏的种子条目                      | ✅ 就位（T08）—— 尚未被复制进任何知识库 |
 | `src/match.ts` —— 精确、模糊与兜底匹配                                   | ✅ 就位（T09），语句与行覆盖 100% —— 每次写入前先查 |
-| `src/state.ts` —— `state.json`、`.machine.json`、环境指纹                | ⛔ 未开始       |
+| `src/state.ts` —— `state.json`、`.machine.json`、环境指纹                | `state.json` 里的命中计数与解法信任计数：✅ 就位（§4.3、T12），语句与行覆盖 100%。`.machine.json` 与环境指纹：⛔ 未开始 |
 | `src/capture.ts` —— 分类、标题行提取与噪声规则                           | ✅ 就位（T10），语句与行覆盖 100% —— 由 T11 的监听器调用 |
 | `src/inject.ts` —— 通知生成、硬上限与解法信任                            | ✅ 就位（T12），语句与行覆盖 100% —— 已接到四个注入点（T13） |
 | `src/resolve-detect.ts` —— 解决检测                                      | ✅ 就位（T14），语句与行覆盖 100% —— 由 `tools/result` 驱动；`recordFix()` 由 `err_record`（T15）调用 |
 | `src/tools.ts` —— 五个工具                                               | ✅ 就位（T15），语句与行覆盖 100% —— `err_lookup`、`err_record`、`err_list`、`err_forget`、`err_stats`，经 `ctx.tools.register()` 注册 |
-| `tests/`                                                                 | ✅ 522 个用例：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 62 与 `seeds` 5（T08、T15）、`match` 40（T09）、`capture` 67（T10）、`plugin` 39（T11、T14）、`inject` 68（T12–T15）、`injection` 65（T13、T14）、`resolve-detect` 19（T14）、`tools` 36（T15） |
+| `tests/`                                                                 | ✅ 554 个用例（非 Windows 上跳过一个）：`paths` 39（T05）、`signature` 30（T06）、`redact` 52（T07）、`store` 62 与 `seeds` 5（T08、T15）、`match` 40（T09）、`capture` 67（T10）、`plugin` 44（T11、T14）、`inject` 70（T12–T15）、`injection` 68（T13、T14）、`resolve-detect` 19（T14）、`tools` 40（T15）、`state` 18（§4.3） |
 | 装进 `web` profile                                                       | ⛔ 未开始       |
 | 发布到 npm                                                               | ⛔ 未开始 —— 还没有 task 覆盖它，见[开发路线图](#开发路线图) |
 
@@ -122,7 +122,8 @@
 ## 它怎么工作
 
 ```
-1. 采集         agent/request-error · agent/error · tools/result · 非零退出
+1. 采集         agent/error · tools/result · 非零退出
+                （agent/request-error：尚未接通，T16）
                 只观察 —— 永不抛错，永不接管重试
                                      │
                                      ▼
@@ -156,15 +157,15 @@
 
 | 来源                 | 钩子                              | 记成什么                                                        | 立即编号？                                                                        |
 | -------------------- | --------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| LLM API 失败         | `agent/request-error`（waterfall）| `code` + 规范化后的 message                                     | 永久性 code：`AUTH`、`QUOTA`、`INVALID_REQUEST`、`CONTEXT_OVERFLOW`、`NO_ADAPTER`、`UNKNOWN` → ✅ 立即 |
+| LLM API 失败         | `agent/request-error`（waterfall）| `code` + 规范化后的 message                                     | 永久性 code：`AUTH`、`QUOTA`、`INVALID_REQUEST`、`CONTEXT_OVERFLOW`、`NO_ADAPTER`、`UNKNOWN` → ✅ 立即 —— **尚未接通（T16）** |
 | 回合级异常           | `agent/error`（emit）             | `error.message` / `code` / `name`                               | ✅ 立即（`unknown` 时安全字符串化）                                                |
 | 工具失败             | `tools/result`（emit）            | `exec.name` + `result.error.message` + `result.error.info.code` | ✅ 立即（`result.isError`）                                                        |
 | 命令非零退出         | `tools/result` 内容嗅探           | 匹配 `\[exit code: (\d+)\]` 且 N ≠ 0                            | ✅ 立即，除非关掉 `captureExitCodes`                                               |
-| 瞬时 LLM 失败        | `agent/request-error`             | `RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`、`EMPTY_RESPONSE` | ❌ 只计数 —— 同一会话内累计到 `transientThreshold`（默认 5）才升级为条目           |
+| 瞬时 LLM 失败        | `agent/request-error`             | `RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`、`EMPTY_RESPONSE` | ❌ 只计数 —— 同一会话内累计到 `transientThreshold`（默认 5）才升级为条目 —— **尚未接通（T16）** |
 
-`agent/request-error` 上的监听器必须 `await next()` 并原样返回下游结果。它只观察，永不接管恢复。
+等它落地（T16），`agent/request-error` 上的监听器必须 `await next()` 并原样返回下游结果。它只观察，永不接管恢复。
 
-**今天接通了什么（T11）。** 监听器的处理体在 `src/plugin.ts`，`apply` 注册其中两个。`agent/error` 把它的 `error` 作为回合级异常交给分类。`tools/result` 把失败结果（`result.isError`）记为工具失败，带上 `result.error.message` 与 `result.error.info?.code`；其余结果则从文本块里嗅探 `[exit code: N]`，命令取自调用参数里的 `command`、`cmd` 或 `script`。每条分好类的报错先与 `ERRORS.md` 里已有的条目匹配：命中则给该条目的命中数与最近时间加一，未命中则追加下一个编号。`count-only` 的报错（未达阈值的瞬时错误，或已升级之后的重复）只给已有同指纹的条目加计数，否则什么也不写。瞬时计数按会话（`Agent.id`）分开；没有 agent 的载荷共用一个插件级计数器。`agent/request-error` 还没注册（T16），所以没有任何 LLM 失败会进入流水线。
+**今天接通了什么（T11）。** 监听器的处理体在 `src/plugin.ts`，`apply` 注册其中两个。`agent/error` 把它的 `error` 作为回合级异常交给分类。`tools/result` 把失败结果（`result.isError`）记为工具失败，带上 `result.error.message` 与 `result.error.info?.code`；其余结果则从文本块里嗅探 `[exit code: N]`，命令取自调用参数里的 `command`、`cmd` 或 `script`。每条分好类的报错先与 `ERRORS.md` 里已有的条目匹配：命中则在本机 `state.json` 里给该条目的命中数与最近时间加一，`ERRORS.md` 不动（§4.3）；未命中则追加下一个编号。`count-only` 的报错（未达阈值的瞬时错误，或已升级之后的重复）只以同样方式给已有同指纹的条目加计数，否则什么也不写。瞬时计数按会话（`Agent.id`）分开；没有 agent 的载荷共用一个插件级计数器。`agent/request-error` 还没注册（T16），所以没有任何 LLM 失败会进入流水线。
 
 **只升级一次。** 瞬时错误按会话、按指纹计数，在计数**达到** `transientThreshold` 的那一次拿到编号 —— 之后不会每次都再升级。`capture` 里没列出的来源什么都不产出，连计数都没有。
 
@@ -197,7 +198,7 @@
 | `ERRORS.md`         | **唯一真源** —— 编号条目，只追加                                         | 可手改；提交进你的私有知识库仓库                        |
 | `ERRORS.archive.md` | 超出 `maxEntries` 后归档的老条目，只追加                                 | 提交进同一个私有仓库                                    |
 | `errors.index.json` | 派生缓存：指纹 → 编号                                                    | 可删，会从 `ERRORS.md` 重建；建议 gitignore             |
-| `state.json`        | 本机状态：命中数、`lastSeen`、`nextId`、环境指纹                         | 可删；**本机文件，绝不提交**                            |
+| `state.json`        | 本机状态：各条目在本机的命中数与 `lastSeen`，以及解法信任计数（环境指纹尚未实现） | 可删；**本机文件，绝不提交**                            |
 | `.machine.json`     | 设备标识 `deviceSlug`（如 `DESKTOP-A`），用于条目里的设备字段            | 可删可重建；设备本地文件，同样别进 git                  |
 | `.lock`             | 瞬时写锁，写完即删                                                       | 忽略它                                                  |
 
@@ -240,6 +241,8 @@ errors.index.json
 
 **字段名**：默认英文。设 `labels: 'zh'` 则改写设计文档 §8 的中文字段名（`指纹`、`分类`、`首次`、`最近`、`命中`、`触发`、`原始信息`、`解法`、`状态`、`备注`）。不管怎么设，解析器两套都认（全角 `：` 也认），所以一份文档可以混用；更新某条时会沿用它原来的语言。注释里的机器 key 永远是英文。
 
+**命中与最近时间**：块里写的值是建条目时的值（`命中: 1`、采到的时间），或此后有人手工改成的值。重复出现从不重写这个块：它按编号计在本机的 `state.json` 里，所以两台设备都命中同一个报错时不会碰同一行，git 历史可以干净合并（§4.3）。插件显示的每个数字 —— 通知、开场摘要、`err_lookup`、`err_list`、`err_stats` —— 都是块里的命中数加上本机的增量，最近时间取两者较晚的一个；所以各设备上的数字可以不同，知识保持一致。删掉 `state.json`，计数就回到块里写的值。改解法、状态或备注（手工或经 `err_record`）仍会重写那一个块。
+
 **解析规则**：以 `^## (E-\d+) ·` 切块；块内 `<!-- errkb: ... -->` 提供机器字段；`- Fix:`（或 `- 解法:`）取到下一个已知字段开头的行为止，所以解法里可以有空行、列表和代码。**你对文档的手工修改优先于索引** —— 索引只是缓存，所以你在任意 Markdown 阅读器里补写的解法，下一次命中就能用上。每个块都保留原文：文档读出再写回逐字节一致，更新只重写被改的那一条。
 
 **该严的地方严**：git 冲突标记、格式错误的条目标题、缺机器注释、重复编号、未知状态、未闭合的代码围栏，都会让文档判为无法解析。此时原文件另存一次为 `ERRORS.corrupt-<时间戳>.md`，新条目只追加，更新一律拒绝，直到修好为止。
@@ -279,7 +282,7 @@ re-diagnosing or researching.
 
 **上限是硬上限，而且上限本身就是设计。** 每步最多 1 条通知、每回合最多 3 条、同一编号每会话最多 2 次；每条通知按保守估算 ≤ 120 token（每个非 ASCII 字符算 1 token，ASCII 每 3 个字符算 1 token），且 ≤ 400 字符。超长时先缩成因、再缩解法，结尾那句指令永远不被截掉。插件来源消息的 `summary` 交给 dsh-llm 自带的 `boundContextSummary`，因此 ≤ 120 字符，对应 `{kind:'plugin', plugin:'err-kb', form:'notice', summary}` 的形状（`@deepseek-ai/dsh-llm` 里的 `MessageSourceMap['plugin']`）。状态为 `fixed` 的条目提示一次后即静默。没有上限的版本比不装还糟：用持续噪声换来的命中率，会把收益变成成本。
 
-**不管用的解法不再被推送**（[`docs/discussions.md`](docs/discussions.md) §4）。注入了某条目的解法之后，同一回合里又采到这一条，就算一次复发：复发 1 次，通知改成「This fix failed here last time; verify before applying.」；复发 2 次且从未成功，本机不再自动注入该条目。改写条目的解法后重新计数。这些计数只属于本机，从不写进 `ERRORS.md`；目前放在内存里，随 `src/state.ts` 再落到 `state.json`。
+**不管用的解法不再被推送**（[`docs/discussions.md`](docs/discussions.md) §4）。注入了某条目的解法之后，同一回合里又采到这一条，就算一次复发：复发 1 次，通知改成「This fix failed here last time; verify before applying.」；复发 2 次且从未成功，本机不再自动注入该条目。改写条目的解法后重新计数。这些计数只属于本机，从不写进 `ERRORS.md`：它们存在 `state.json` 的 `trust` 下，所以被压制的解法重启后依然被压制，且只在本机。删掉 `state.json` 即重新计数。
 
 每个上限都能往小调；`inject: 'off'` 关掉所有通知，而采集照常记录。会话开场摘要与常驻段各有自己的开关：`sessionDigest: 'off'` 与 `systemPromptHint: false`。
 
@@ -330,7 +333,7 @@ re-diagnosing or researching.
 
 > **什么都没发布，插件也还没装进任何地方。** 前两条命令从 T01–T04 起可用 ——
 > `pnpm install` 与 `pnpm build` 都退出 0 并产出 `lib/index.js` —— 但把包加进
-> profile 要到 T17 才验证，而且装进去也没有行为可观察。
+> profile 要到 T17 才验证。加进去之后，它会按[目前完成到哪一步](#目前完成到哪一步)所述记录与注入。
 
 ```sh
 cd <repo-root>
@@ -371,10 +374,10 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 五个工具的输出统一走 `output.schema` + `render`（`@deepseek-ai/dsh-tools` 的 `ToolOutputDefinition`），与 dsh-note 同款，保证模型侧收到的是受控纯文本；它们用 `defineTool` 定义，经 `ctx.tools.register()` 注册。
 
-- **`err_record` 是写入解法的唯一入口。** 给 `id` 时，解法走记录器的 `recordFix()`（条目转为 `fixed`），然后再用一次写入改状态与备注，所以显式给出的 `status` 优先。给 `message` 时，按采集时的方式匹配（取标题行，在 `category` 或所有分类里找）；命中则更新那个条目、不计命中数，未命中则以 `category`（默认 `agent`）追加新条目。匹配与追加在同一次写入里完成，所以关于同一个新报错的两次调用只会建一个条目。
+- **`err_record` 是写入解法的唯一入口。** 给 `id` 时，解法走记录器的 `recordFix()`（条目转为 `fixed`），然后再用一次写入改状态与备注，所以显式给出的 `status` 优先。给 `message` 时，按采集时的方式匹配（取标题行，在 `category` 或所有分类里找）；只有精确命中才更新那个条目（不计命中数）；近似命中 —— 模糊或按错误码 —— 什么都不写，返回 `closest match is E-0007 (approximate, by fuzzy); nothing was written. Call err_record with id: "E-0007" to confirm, or reword message`，免得解法落到一个相似却不同的条目上；未命中则以 `category`（默认 `agent`）追加新条目。匹配与追加在同一次写入里完成，所以关于同一个新报错的两次调用只会建一个条目。
 - **所有写入都走采集的写入路径。** 它们都在知识库唯一的写入链上排队，同样是 500 ms 预算与重试；存储层对每段文本脱敏。锁一直被占或写入失败，都以错误结果返回，绝不抛出。
 - **错误是返回值。** 参数类型不对、`status`/`scope` 取值未知，由 `defineTool` 的校验拒绝（`ToolArgsError`）；其余情况 —— `id` 与 `message` 同时给或都不给、编号不存在、解法为空、`ERRORS.md` 读不出来 —— 返回一行 `error`，例如 `err_record: no entry E-0042`。
-- **token 估算明确标为估算。** `err_stats` 的算法是：*带解法的通知数 × 800 − 所有已送达通知的 token 数*。800 取的是 §7 里一次重新诊断 800–3000 token 的下限；常驻开销（每次请求的系统提示段、会话摘要）没有扣除。
+- **token 估算明确标为估算。** `err_stats` 的算法是：*带解法的通知数 × 800 − 所有已送达通知的 token 数*。800 取的是 §7 里一次重新诊断 800–3000 token 的下限；常驻开销（每次请求的系统提示段、会话摘要）没有扣除。这个数字不会低于 0：通知花掉的 token 比假定省下的还多时 —— 送达了通知、却没有一条带解法 —— 显示 0，同一行写出负数的算式，例如 `0 fix notices × 800 − 60 notice tokens = −60, shown as 0`。
 
 ## 配置
 
@@ -441,7 +444,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 
 | 风险                                       | 约束                                                                                                     |
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| 监听器抛错 → 回合直接被关闭                 | 所有监听器包 `try/catch`；失败降级为「本次不记录」，在 `state.json` 累计并节流上报                        |
+| 监听器抛错 → 回合直接被关闭                 | 所有监听器包 `try/catch`；失败降级为「本次不记录」，在内存里累计并节流上报                        |
 | 抢走 `dsh-llm-retry` 的恢复权               | `agent/request-error` 必须 `await next()` 并原样返回 —— 只观察，不接管                                     |
 | 写文件阻塞回合                              | 本地写 + 3 次重试 + 500 ms 超时；超时则跳过该次记录，永不抛错                                              |
 | 多进程同写（web + headless 并发）           | `.lock` 文件（`wx` 打开，10 s 过期可抢占；抢占者按 token 只删自己判定过期的那把锁）+ 临时文件 + `rename` 原子替换                                   |
@@ -450,7 +453,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | 密钥/隐私泄进公开仓库                       | 落盘前强制脱敏；`share: 'public'` 时连 `requestId` 都不保留                                                |
 | 条目无限膨胀拖慢上下文                      | `maxEntries` 归档 + 每条 400 字符封顶 + 注入去重与每步/每回合/每会话上限                                   |
 
-**今天实际跑了多少（T11）。** 监听器按上表包裹：失败只计数、经插件的 logger 每分钟最多报一次，永不抛出。在 `src/state.ts` 带来 `state.json` 之前，失败计数只保存在内存里。写入不在回合里进行，同一个知识库一次只写一条，每条有 500 ms 预算，涵盖至多 3 次重试与等锁；预算用完锁仍被占，则静默跳过这次记录。已经拿到锁的写入不会被中途打断，因为存储无法安全地放弃写到一半的文件。解析不了的文档不重试，修好之前不再记录。脱敏、锁、原子写与损坏文档这几行由存储层（T07–T08）负责，对每次写入都生效。插件发起的 promise 没有一个会缺少处理器：`tools/post-execute` 在 `await next()` 之前发起的查找一创建就挂上了兜底，所以畸形的工具结果（比如 `isError` 却没有 `error`）只会被计数、下游决定原样通过，而不会变成可能拖垮宿主进程的未处理拒绝。
+**今天实际跑了多少（T11）。** 监听器按上表包裹：失败只计数、经插件的 logger 每分钟最多报一次，永不抛出。失败计数只在进程存活期间保存在内存里，不写进 `state.json`；写进去的只有命中计数与解法信任计数。`state.json` 不是合法 JSON 或版本不是 1 时绝不致命：读作空（计数回到块里的值）、只报告一次，并在下一次写入时另存为 `state.corrupt-<时间戳>.json`。写 `state.json` 与写 `ERRORS.md` 用同一把 `.lock`、原子替换文件，并共用这次写入的 500 ms 预算。写入不在回合里进行，同一个知识库一次只写一条，每条有 500 ms 预算，涵盖至多 3 次重试与等锁；预算用完锁仍被占，则静默跳过这次记录。已经拿到锁的写入不会被中途打断，因为存储无法安全地放弃写到一半的文件。解析不了的文档不重试，修好之前不再记录。脱敏、锁、原子写与损坏文档这几行由存储层（T07–T08）负责，对每次写入都生效。插件发起的 promise 没有一个会缺少处理器：`tools/post-execute` 在 `await next()` 之前发起的查找一创建就挂上了兜底，所以畸形的工具结果（比如 `isError` 却没有 `error`）只会被计数、下游决定原样通过，而不会变成可能拖垮宿主进程的未处理拒绝。
 
 **它永远不会做的事**：接管重试、把异常抛进回合、回写损坏的文档、让一次写入阻塞回合、把任何东西发出这台机器。
 
@@ -512,7 +515,7 @@ dsh plugin --profile web add .        # 相对路径，基于当前目录锚定
 | 🔜   | T16–T17 —— LLM 失败接入，以及安装进 web profile                      |
 | 🔜   | T18 —— 可选：Obsidian 导出                                           |
 
-T01–T15 已勾选；T01–T13 已合并到上游，T14 与 T15 尚未合并。其余仍开放；T18 随时可以砍掉，不影响主线。
+T01–T15 已勾选，并已全部合并到上游（T14 与 T15 随 PR #12 合并）。其余仍开放；T18 随时可以砍掉，不影响主线。
 
 ### 阶段对照
 
@@ -561,7 +564,7 @@ T01–T15 已勾选；T01–T13 已合并到上游，T14 与 T15 尚未合并。
 
 ## 开发
 
-骨架已就位（T01–T04），下面这些命令都能跑。`build`、`typecheck`、`lint`、`test`、`format:check` 正是 CI 在每次 PR 上执行的五步：
+骨架已就位（T01–T04），下面这些命令都能跑。`build`、`typecheck`、`lint`、`test`、`format:check` 正是 CI 在每次推送到 `main` 与每次 PR 上执行的五步：
 
 ```sh
 pnpm install
@@ -595,13 +598,13 @@ pnpm format:check     # prettier --check .（CI 跑的就是这条）
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | 「它到底装上了没有？」                    | 启动日志那一行会打印解析出的库路径；`dsh --profile web --dump-config` 能看到 `err-kb` 条目。装完必须重启 —— `dsh.profile.bundles` 不热重载 |
 | 「我的报错去哪了？」                      | `err_stats` 会打印解析出的路径。先看[知识库落在哪里](#知识库落在哪里)                                                         |
-| 「什么都没被记录。」                      | 查 `capture` 开关、`captureExitCodes`，以及这次失败是不是瞬时类（`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`、`EMPTY_RESPONSE`）—— 那些只计数，累计到 `transientThreshold` 才升级；每个计数器都能在 `state.json` 里看到 |
+| 「什么都没被记录。」                      | 查 `capture` 开关、`captureExitCodes`，以及这次失败是不是瞬时类（`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`、`EMPTY_RESPONSE`）—— 那些按会话在内存里计数，累计到 `transientThreshold` 才升级；条目建好之后，它的重复计在 `state.json` 里 |
 | 「写入被静默跳过了。」                    | 这正是库目录不可写、拿不到锁、或写入 3 次重试 + 500 ms 后超时时的既定行为。检查库目录权限，以及是否已回退到 `$DSH_HOME/errkb/` |
 | 「注入太吵了。」                          | `inject: 'off'` 彻底关掉注入而采集继续；`systemPromptHint: false` 去掉常驻的 50 token 段；`sessionDigest: 'off'` 去掉开场摘要   |
 | 「某条条目一直带着错误解法被注入。」       | 用 `err_record` 把它设成 `wontfix`，或标记为误判 —— 它不再被自动注入，但仍在计数                                              |
 | 「`ERRORS.md` 看起来坏了。」              | 插件永不回写自己解析不了的文档：原文件会另存为 `ERRORS.corrupt-<时间戳>.md`，新条目只追加在其后。修好另存的那份再放回去         |
 | 「我手改了某条解法，却没生效。」          | 手工修改优先于索引，本不该发生 —— 检查改动是否落在 `- Fix:`（或 `- 解法:`）字段内、且在下一个字段名之前，然后删掉 `errors.index.json` 强制重建 |
-| 「我想从头来过。」                        | 删 `state.json`（计数器）、删 `errors.index.json`（缓存），两者都会重建。删 `ERRORS.md` 就是删知识 —— 那才是唯一要紧的文件      |
+| 「我想从头来过。」                        | 删 `state.json`（本机的命中与解法信任计数：计数回到 `ERRORS.md` 里写的命中数，信任从头算）、删 `errors.index.json`（缓存），两者都会重新生成。删 `ERRORS.md` 就是删知识 —— 那才是唯一要紧的文件      |
 | 「两台机器的计数对不上。」                | 预期如此：计数器是本机的，刻意不进 git。共享的只有知识                                                                        |
 
 ## 卸载
@@ -667,12 +670,15 @@ pnpm format:check     # prettier --check .（CI 跑的就是这条）
 
 ## 参与与反馈
 
-现在没有代码可贡献 —— 这反而是对设计提异议最便宜的时刻。
+T01–T15 已实现并有测试；T16 与 T17 仍开放，插件还没装进任何地方，也没有发布。欢迎贡献 —— 修 bug、补测试、审设计，或者趁 §17 未定的事项改起来还便宜时对设计提异议。
 
 - **设计文档是唯一真源。** 如果本 README 和 [`docs/设计说明书.md`](docs/设计说明书.md) 冲突，以设计文档为准（并且本 README 有 bug 值得报）。
 - **意见写进文档。** §17 是一张留了空「你的回答」列的表，§19 是一块批注区，都是给人直接写进去的。
 - **两份 README 必须同步。** `README.md` 是英文，`README.zh-CN.md` 是中文，而它们已经漂移过一次。改其中一份，就要在同一次改动里改另一份。
 - **仓库的语言约定**：`README.md` 以及代码、注释、提交信息、文档用英文；`README.zh-CN.md` 与设计文档用中文（设计文档用中文是刻意的选择）。
+- **`pnpm test` 执行覆盖率门槛。** 它带覆盖率跑 vitest，语句或行低于 99% 即失败；推送前连同 `pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm build` 一起跑 —— CI 跑的就是这五步。
+- **隐私检查必须通过。** `.github/workflows/privacy-guard.yml` 会拒绝整个仓库里出现的用户绝对路径、个人邮箱与形似凭据的字符串；请改用 `<repo-root>` 之类的占位符。
+- **一个 task 一个提交**，用约定式前缀并带上 task 标签：`feat: add the five err_ tools (T15)`、`fix: … (T15)`、`docs: …`。
 
 ## 许可证
 

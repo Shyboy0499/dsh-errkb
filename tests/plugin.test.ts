@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
@@ -19,6 +26,7 @@ import {
   registerListeners,
   resultText,
   settled,
+  stateTrustStore,
 } from "../src/plugin";
 import type { RecorderDeps, RecorderLogger } from "../src/plugin";
 import { nodeStoreFs, parseDocument } from "../src/store";
@@ -141,6 +149,10 @@ const TSC_A =
 const TSC_B =
   "/srv/other/src/a.ts:40:9 - error TS2307: Cannot find module 'missing-pkg'.\n[exit code: 1]";
 
+async function readState(): Promise<unknown> {
+  return JSON.parse(await readFile(filesIn(dir).state, "utf8"));
+}
+
 async function readEntries(path: string) {
   return parseDocument(await readFile(path, "utf8")).blocks.map((b) => b.entry);
 }
@@ -207,9 +219,13 @@ describe("apply: end to end on a temporary knowledge base", () => {
     fake.fire("tools/result", exec("bash", { command: "pnpm tsc" }), ok(TSC_B));
     await settled(filesIn(dir).errors);
 
+    // The block keeps its baseline; the repeat is counted in state.json.
     const entries = await readEntries(filesIn(dir).errors);
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ id: "E-0001", hits: 2 });
+    expect(entries[0]).toMatchObject({ id: "E-0001", hits: 1 });
+    expect(await readState()).toMatchObject({
+      entries: { "E-0001": { hits: 1 } },
+    });
   });
 
   it("two different silent commands take two IDs", async () => {
@@ -352,7 +368,8 @@ describe("recorder: the record and count-only paths", () => {
       "hit",
     ]);
     const [entry] = await readEntries(files.errors);
-    expect(entry).toMatchObject({ id: "E-0001", hits: 3 });
+    expect(entry).toMatchObject({ id: "E-0001", hits: 1 });
+    expect(rec.outcomes.at(-1)).toEqual({ kind: "hit", id: "E-0001", hits: 3 });
 
     // Another session has its own count, but the entry exists: still a hit.
     rec.capture(rateLimit, "s2");
@@ -403,43 +420,11 @@ describe("recorder: the record and count-only paths", () => {
     expect(rec.outcomes.map((o) => o.kind)).toEqual(["counted", "appended"]);
   });
 
-  it("an entry that vanished between match and update is appended again", async () => {
+  it("a hit against a cached entry gone from ERRORS.md still only counts", async () => {
     // mtime stays put, so the cached index keeps an entry that, once `vanish`
-    // is set, the store no longer finds when it re-reads under the lock.
-    const files = filesIn(dir);
-    const real = nodeStoreFs();
-    let vanish = false;
-    const fs: StoreFs = {
-      ...real,
-      mtimeMs: async (path) => (path === files.errors ? 1 : real.mtimeMs(path)),
-      readFile: async (path) =>
-        vanish && path === files.errors ? "# ERRORS\n" : real.readFile(path),
-    };
-    const { rec } = recorder({ fs, options: { transientThreshold: 2 } });
-    const auth = { kind: "llm", code: "AUTH", message: "bad key" } as const;
-    const slow = { kind: "llm", code: "RATE_LIMIT", message: "slow" } as const;
-    const late = { kind: "llm", code: "TIMEOUT", message: "late" } as const;
-
-    rec.capture(auth);
-    rec.capture(slow, "s1");
-    rec.capture(slow, "s1");
-    // A count-only miss reads the index and writes nothing: the cache stays.
-    rec.capture(late, "s1");
-    await rec.idle();
-    expect(rec.outcomes.map((o) => o.kind)).toEqual([
-      "appended",
-      "counted",
-      "appended",
-      "counted",
-    ]);
-
-    vanish = true;
-    rec.capture(auth);
-    await rec.idle();
-    expect(rec.outcomes.at(-1)).toEqual({ kind: "appended", id: "E-0001" });
-  });
-
-  it("count-only against an entry that vanished counts nothing", async () => {
+    // is set, ERRORS.md no longer has. A hit writes only state.json, so
+    // nothing re-reads the document: the counter for an ID that is never
+    // reused is harmless.
     const files = filesIn(dir);
     const real = nodeStoreFs();
     let vanish = false;
@@ -469,10 +454,117 @@ describe("recorder: the record and count-only paths", () => {
     vanish = true;
     rec.capture(slow, "s1");
     await rec.idle();
-    // The cached index still had the entry, so the store was asked to update
-    // it - and found nothing under the lock.
-    expect(vanishedReads).toBe(1);
-    expect(rec.outcomes.at(-1)).toEqual({ kind: "counted" });
+    expect(vanishedReads).toBe(0);
+    expect(rec.outcomes.at(-1)).toEqual({ kind: "hit", id: "E-0001", hits: 2 });
+  });
+});
+
+describe("recorder: hit counters in state.json (§4.3)", () => {
+  const auth = { kind: "llm", code: "AUTH", message: "bad key" } as const;
+
+  it("a repeat leaves ERRORS.md byte-identical while state.json counts 1, 2", async () => {
+    const { rec, files } = recorder();
+    rec.capture(auth);
+    await rec.idle();
+    const before = await readFile(files.errors, "utf8");
+    await expect(readFile(files.state, "utf8")).rejects.toThrow();
+
+    for (const n of [1, 2]) {
+      rec.capture(auth);
+      await rec.idle();
+      expect(await readFile(files.errors, "utf8")).toBe(before);
+      expect(await readState()).toMatchObject({
+        version: 1,
+        entries: { "E-0001": { hits: n } },
+        trust: {},
+      });
+      expect(rec.outcomes.at(-1)).toEqual({
+        kind: "hit",
+        id: "E-0001",
+        hits: 1 + n,
+      });
+    }
+    const index = await rec.entries();
+    expect(index?.map(({ entry }) => entry.hits)).toEqual([3]);
+  });
+
+  it("concurrent hits serialize to the right count", async () => {
+    const { rec, files } = recorder();
+    for (let i = 0; i < 12; i++) rec.capture(auth);
+    await rec.idle();
+    expect(rec.stats).toMatchObject({ appended: 1, hits: 11, failures: 0 });
+    expect(await readState()).toMatchObject({
+      entries: { "E-0001": { hits: 11 } },
+    });
+    expect((await readEntries(files.errors))[0]?.hits).toBe(1);
+  });
+
+  it("a corrupt state.json never throws, reads as empty, is reported once and saved aside by the next hit", async () => {
+    const { rec, files, warnings } = recorder();
+    rec.capture(auth);
+    rec.capture(auth);
+    await rec.idle();
+    await writeFile(files.state, "{ broken");
+
+    // Read twice: the counts fall back to the baseline, one warning.
+    expect((await rec.entries())?.[0]?.entry.hits).toBe(1);
+    expect((await rec.entries())?.[0]?.entry.hits).toBe(1);
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0]?.[2])).toContain("state.json is not valid");
+    expect(await readFile(files.state, "utf8")).toBe("{ broken");
+
+    // The next hit saves it aside and starts a fresh delta.
+    rec.capture(auth);
+    await rec.idle();
+    expect(rec.outcomes.at(-1)).toEqual({ kind: "hit", id: "E-0001", hits: 2 });
+    const copies = (await readdir(dir)).filter((n) =>
+      n.startsWith("state.corrupt-"),
+    );
+    expect(copies).toHaveLength(1);
+    expect(await readFile(join(dir, copies[0] as string), "utf8")).toBe(
+      "{ broken",
+    );
+    expect(await readState()).toMatchObject({
+      entries: { "E-0001": { hits: 1 } },
+    });
+
+    // A new corruption after that is reported again (subject to the
+    // once-a-minute throttle: here it counts as a failure).
+    await writeFile(files.state, '{"version":2}');
+    expect((await rec.entries())?.[0]?.entry.hits).toBe(1);
+    expect(rec.stats.failures).toBe(2);
+  });
+
+  it("a busy lock on the hit path times out like any write", async () => {
+    const { clock } = fakeClock();
+    const { rec, files } = recorder({ clock });
+    rec.capture(auth);
+    await rec.idle();
+    await writeFile(files.lock, "held elsewhere");
+    rec.capture(auth);
+    await rec.idle();
+    expect(rec.outcomes.at(-1)).toEqual({ kind: "timeout" });
+    await rm(files.lock);
+    await expect(readFile(files.state, "utf8")).rejects.toThrow();
+  });
+});
+
+describe("stateTrustStore", () => {
+  it("an unreadable state.json loads nothing and is counted, never thrown", async () => {
+    const { rec, files, warnings } = recorder();
+    await mkdir(files.state, { recursive: true });
+    expect(await rec.machineState()).toBeUndefined();
+    const store = stateTrustStore(rec);
+    expect(store.load()).toEqual({ entries: {} });
+    expect(await store.loaded).toBeUndefined();
+    expect(rec.stats.failures).toBe(2);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("a corrupt state.json loads as empty trust", async () => {
+    const { rec, files } = recorder();
+    await writeFile(files.state, "[]");
+    expect(await stateTrustStore(rec).loaded).toEqual({ entries: {} });
   });
 });
 

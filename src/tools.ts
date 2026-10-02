@@ -446,6 +446,10 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
    * Find the entry a message describes, or append one. Matching and appending
    * run in one write, so two calls about the same new error cannot both
    * append it.
+   *
+   * Only an exact hit names the entry to update. A near hit (fuzzy or code,
+   * §5.3) writes nothing and comes back as the candidate: a fix recorded on a
+   * similar but different entry would later be injected as its known fix.
    */
   async function findOrAppend(
     message: string,
@@ -458,6 +462,10 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
       const document = await store.read();
       const index = indexEntries(document.blocks.map((b) => b.entry));
       const hit = matchText(message, index, category);
+      if (hit !== undefined && hit.via !== "exact")
+        return {
+          error: `closest match is ${hit.id} (approximate, by ${hit.via}); nothing was written. Call err_record with id: "${hit.id}" to confirm, or reword message`,
+        };
       if (hit !== undefined) return { id: hit.id, created: false };
 
       const cat = category ?? DEFAULT_RECORD_CATEGORY;
@@ -484,7 +492,7 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
   const record = defineTool({
     name: "err_record",
     description:
-      "Record what you learned about an error in the errkb knowledge base. Give exactly one of id (an existing entry) or message (the error text; a new entry is created when nothing matches). A fix marks the entry fixed. This is the only way a fix is written.",
+      "Record what you learned about an error in the errkb knowledge base. Give exactly one of id (an existing entry) or message (the error text). A message updates an entry only when it matches exactly; on an approximate match nothing is written and the closest entry's ID is returned, so confirm it with id. A new entry is created when nothing matches. A fix marks the entry fixed. This is the only way a fix is written.",
     parameters: {
       id: {
         type: "string",
@@ -492,7 +500,8 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
       },
       message: {
         type: "string",
-        description: "The error text, when you do not know the ID.",
+        description:
+          "The error text, when you do not know the ID. Only an exact match updates an existing entry.",
       },
       fix: {
         type: "string",
@@ -788,12 +797,15 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
         if (isError(value)) return errorText("err_stats", value);
         const where =
           value.scope === "session" ? "this session" : "all sessions";
+        const net =
+          value.fixNotices * ASSUMED_DIAGNOSIS_TOKENS - value.noticeTokens;
+        const clamped = net < 0 ? ` = −${-net}, shown as 0` : "";
         return text(
           [
             `Knowledge base: ${value.kbDir}`,
             `Entries: ${value.entries} · hits: ${value.hits} · open without a fix: ${value.openWithoutFix}`,
             `Notices (${where}): ${value.notices}, ${value.fixNotices} with a fix, ${value.noticeTokens} tokens`,
-            `Estimated tokens saved: ${value.estimatedTokensSaved} (estimate: ${value.fixNotices} fix notices × ${ASSUMED_DIAGNOSIS_TOKENS} − ${value.noticeTokens} notice tokens)`,
+            `Estimated tokens saved: ${value.estimatedTokensSaved} (estimate: ${value.fixNotices} fix notices × ${ASSUMED_DIAGNOSIS_TOKENS} − ${value.noticeTokens} notice tokens${clamped})`,
             `Distrusted fixes, not injected: ${value.suppressed.length === 0 ? "none" : value.suppressed.join(", ")}`,
           ].join("\n"),
         );
@@ -812,6 +824,7 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
           scope === "session" ? session : undefined,
         );
         const { trust } = deps.injection;
+        await trust.ready;
         return {
           scope,
           kbDir: deps.kbDir,
@@ -845,7 +858,9 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
  * {@link ASSUMED_DIAGNOSIS_TOKENS} tokens, and every notice delivered costs
  * its own tokens. It leaves out the standing costs (the system-prompt section
  * on every request, the session digest), so it is an estimate, and labelled
- * one wherever it is shown.
+ * one wherever it is shown. It never goes below 0: notices delivered without
+ * a fix cost tokens, but a negative "saved" figure reads as nonsense, so the
+ * rendered line shows the unclamped arithmetic next to the 0.
  *
  * @param fixNotices - notices that carried a fix.
  * @param noticeTokens - the tokens of every notice delivered.
@@ -854,7 +869,7 @@ export function estimateSaved(
   fixNotices: number,
   noticeTokens: number,
 ): number {
-  return fixNotices * ASSUMED_DIAGNOSIS_TOKENS - noticeTokens;
+  return Math.max(0, fixNotices * ASSUMED_DIAGNOSIS_TOKENS - noticeTokens);
 }
 
 /**
