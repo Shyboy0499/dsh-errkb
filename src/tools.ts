@@ -824,6 +824,7 @@ export function createTools(deps: ToolsDeps): ToolDefinition[] {
           scope === "session" ? session : undefined,
         );
         const { trust } = deps.injection;
+        await trust.ready;
         return {
           scope,
           kbDir: deps.kbDir,

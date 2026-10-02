@@ -26,6 +26,7 @@ import {
   registerListeners,
   resultText,
   settled,
+  stateTrustStore,
 } from "../src/plugin";
 import type { RecorderDeps, RecorderLogger } from "../src/plugin";
 import { nodeStoreFs, parseDocument } from "../src/store";
@@ -545,6 +546,25 @@ describe("recorder: hit counters in state.json (§4.3)", () => {
     expect(rec.outcomes.at(-1)).toEqual({ kind: "timeout" });
     await rm(files.lock);
     await expect(readFile(files.state, "utf8")).rejects.toThrow();
+  });
+});
+
+describe("stateTrustStore", () => {
+  it("an unreadable state.json loads nothing and is counted, never thrown", async () => {
+    const { rec, files, warnings } = recorder();
+    await mkdir(files.state, { recursive: true });
+    expect(await rec.machineState()).toBeUndefined();
+    const store = stateTrustStore(rec);
+    expect(store.load()).toEqual({ entries: {} });
+    expect(await store.loaded).toBeUndefined();
+    expect(rec.stats.failures).toBe(2);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("a corrupt state.json loads as empty trust", async () => {
+    const { rec, files } = recorder();
+    await writeFile(files.state, "[]");
+    expect(await stateTrustStore(rec).loaded).toEqual({ entries: {} });
   });
 });
 

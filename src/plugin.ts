@@ -70,7 +70,6 @@ import {
   estimateTokens,
   SYSTEM_PROMPT_HINT,
   SYSTEM_PROMPT_SECTION,
-  memoryTrustStore,
   noticeSource,
   sessionDigestText,
 } from "./inject";
@@ -257,9 +256,17 @@ export interface Recorder {
   /**
    * Run any store operation on the same path as recordFix(): queued behind
    * every earlier write, under the same budget and retries (T15's other
-   * writes: status and notes, a new entry, an archived one). Never rejects.
+   * writes: status and notes, a new entry, an archived one). `state` is this
+   * machine's state.json, under the same budget. Never rejects.
    */
-  write<T>(task: (store: ErrorStore) => Promise<T>): Promise<WriteOutcome<T>>;
+  write<T>(
+    task: (store: ErrorStore, state: StateFile) => Promise<T>,
+  ): Promise<WriteOutcome<T>>;
+  /**
+   * This machine's state.json, read like entries(); a corrupt file reads as
+   * empty. Undefined when the read failed.
+   */
+  machineState(): Promise<MachineState | undefined>;
   /** Count a failure and log it, at most once a minute; never throws. */
   fail(error: unknown): void;
   /** Settles once every write queued so far has finished. */
@@ -671,7 +678,7 @@ export function createRecorder(deps: RecorderDeps): Recorder {
   }
 
   function write<T>(
-    task: (store: ErrorStore) => Promise<T>,
+    task: (store: ErrorStore, state: StateFile) => Promise<T>,
   ): Promise<WriteOutcome<T>> {
     return queued(key, async (): Promise<WriteOutcome<T>> => {
       try {
@@ -726,6 +733,17 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     },
 
     entries: read,
+
+    machineState() {
+      return queued(key, async () => {
+        try {
+          return await readState(createStateFile(deps.files, {}, fs, clock));
+        } catch (error) {
+          fail(error);
+          return undefined;
+        }
+      });
+    },
 
     write,
 
@@ -805,8 +823,9 @@ export function createRecorder(deps: RecorderDeps): Recorder {
 // read its context and is never injected.
 //
 // Fix trust is one FixTrust per plugin instance over an injectable TrustStore
-// (memory until state.json exists), scoped per session, so a recurrence is
-// counted only within the session and turn that injected the fix.
+// (state.json's `trust` by default, see stateTrustStore()), scoped per
+// session, so a recurrence is counted only within the session and turn that
+// injected the fix.
 //
 // Resolution detection (T14) rides `tools/result`. Each session keeps a
 // ResolutionTracker (src/resolve-detect.ts, where the rule and the window are
@@ -841,7 +860,7 @@ export const DEFAULT_INJECTION_OPTIONS: InjectionOptions = {
 export interface InjectionDeps {
   recorder: Recorder;
   options?: Partial<InjectionOptions>;
-  /** Where fix trust lives; memory by default. */
+  /** Where fix trust lives; state.json by default. */
   trust?: TrustStore;
   /** Lower notice budgets, for every session. */
   caps?: Partial<CapLimits>;
@@ -958,6 +977,38 @@ function counted(hit: Hit): Hit {
 }
 
 /**
+ * Fix trust kept in state.json under `trust` (§4.3, T12): machine-local, so
+ * a fix suppressed here stays suppressed after a restart and on no other
+ * device. The saved records are read once through the recorder and join the
+ * in-memory state through FixTrust's `ready`. Every save queues a write of
+ * this process's records over what is on disk, on the recorder's write chain
+ * and under its lock and budget: records of IDs this process never touched -
+ * another harness's on the same machine - are kept, and for an ID both
+ * touched the later save wins. A failed or timed-out save is counted like any
+ * write, and the next save writes the full set again.
+ *
+ * @param recorder - the recorder whose knowledge base holds state.json.
+ */
+export function stateTrustStore(recorder: Recorder): TrustStore {
+  return {
+    load: () => ({ entries: {} }),
+    loaded: recorder
+      .machineState()
+      .then((state) =>
+        state === undefined ? undefined : { entries: state.trust },
+      ),
+    save(state) {
+      const entries = structuredClone(state.entries);
+      void recorder.write((_store, file) =>
+        file.update((machine) => {
+          Object.assign(machine.trust, entries);
+        }),
+      );
+    },
+  };
+}
+
+/**
  * Bind the four injection points to a recorder.
  *
  * @param deps - the recorder, settings, trust store and caps.
@@ -966,7 +1017,7 @@ function counted(hit: Hit): Hit {
 export function createInjection(deps: InjectionDeps): Injection {
   const o: InjectionOptions = { ...DEFAULT_INJECTION_OPTIONS, ...deps.options };
   const { recorder } = deps;
-  const trust = new FixTrust(deps.trust ?? memoryTrustStore());
+  const trust = new FixTrust(deps.trust ?? stateTrustStore(recorder));
   const sessions = new Map<string, SessionState>();
   // A tool miss whose write will name the ID, keyed by the execution object
   // that `tools/post-execute` and `tools/result` both receive (the registry

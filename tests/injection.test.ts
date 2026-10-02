@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
@@ -938,12 +938,13 @@ describe("fix trust through the hooks", () => {
 });
 
 // ---------------------------------------------------------------------------
-// agent/session-start
+// state.json
 
 describe("state.json: counters stay out of ERRORS.md (§4.3)", () => {
   const readState = async () =>
     JSON.parse(await readFile(filesIn(dir).state, "utf8")) as {
       entries: Record<string, { hits: number; lastSeen: string }>;
+      trust: Record<string, unknown>;
     };
 
   it("a repeated failure leaves ERRORS.md byte-identical; hits count in state.json and the notice adds them up", async () => {
@@ -998,7 +999,74 @@ describe("state.json: counters stay out of ERRORS.md (§4.3)", () => {
     await call(fake, shell(), ok(TSC_B));
     expect(await effectiveHits()).toEqual([["E-0001", 2]]);
   });
+
+  it("fix trust lives in state.json: a suppressed fix stays suppressed after a restart", async () => {
+    // Another harness on this machine already trusts E-0009; it is kept.
+    const other = {
+      injected: 1,
+      recurredAfterInject: 0,
+      succeeded: 1,
+      fixSig: fixSig("other"),
+    };
+    await writeFile(
+      filesIn(dir).state,
+      JSON.stringify({ version: 1, entries: {}, trust: { "E-0009": other } }),
+    );
+    const first = wired();
+    await first.injection.trust.ready;
+    const a = agent();
+    const fail = () => exec("t", {}, a);
+    await call(first.fake, fail(), failed("EPERM: rename", "EPERM"));
+    await edit("E-0001", { fix: "close the editor" });
+
+    // Injected, then captured again in the same turn, twice.
+    await first.fake.preStep(a, 1, 1);
+    await call(first.fake, fail(), failed("EPERM: rename", "EPERM"));
+    await first.fake.preStep(a, 1, 2);
+    await call(first.fake, fail(), failed("EPERM: rename", "EPERM"));
+    await first.fake.preStep(a, 1, 3);
+    await call(first.fake, fail(), failed("EPERM: rename", "EPERM"));
+    expect(first.injection.trust.level("E-0001", "close the editor")).toBe(
+      "suppressed",
+    );
+    await settled(filesIn(dir).errors);
+    const state = await readState();
+    expect(state.trust).toEqual({
+      "E-0009": other,
+      "E-0001": {
+        injected: 2,
+        recurredAfterInject: 2,
+        succeeded: 0,
+        fixSig: fixSig("close the editor"),
+      },
+    });
+    // Machine-local: nothing of it reaches ERRORS.md.
+    expect(await readFile(filesIn(dir).errors, "utf8")).not.toMatch(
+      /recurred|injected/,
+    );
+
+    // A new recorder and injection layer: the restart.
+    const second = wired();
+    await second.injection.trust.ready;
+    expect(second.injection.trust.level("E-0001", "close the editor")).toBe(
+      "suppressed",
+    );
+    const b = agent("b");
+    await second.fake.preStep(b, 1, 1);
+    expect(
+      contexts(
+        await call(
+          second.fake,
+          exec("t", {}, b),
+          failed("EPERM: rename", "EPERM"),
+        ),
+      ),
+    ).toEqual([]);
+  });
 });
+
+// ---------------------------------------------------------------------------
+// agent/session-start
 
 describe("agent/session-start: the digest", () => {
   async function seed(n: number) {
